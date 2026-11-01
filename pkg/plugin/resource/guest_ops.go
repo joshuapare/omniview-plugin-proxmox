@@ -25,8 +25,6 @@ const (
 	privConfig    = "VM.Config.*"
 	privClone     = "VM.Clone"
 	privMigrate   = "VM.Migrate"
-	// privGuestAgent changed name in PVE 9.
-	privGuestAgent = "VM.GuestAgent.Unrestricted (PVE 9) or VM.Monitor (PVE 8)"
 )
 
 // guestAction is one lifecycle action: POST .../status/{id}.
@@ -69,7 +67,6 @@ const (
 	actionConfig    = "config"
 	actionMigrate   = "migrate"
 	actionClone     = "clone"
-	actionGuestExec = "guest-exec"
 )
 
 var configAction = resourcev2.ActionDescriptor{
@@ -98,6 +95,7 @@ func (k *kind) actionDescriptors() []resourcev2.ActionDescriptor {
 	for _, a := range actions {
 		out = append(out, a.descriptor)
 	}
+	out = append(out, k.migrateAction(), cloneAction)
 	out = append(out, configAction)
 	for i := range out {
 		out[i].Scope = resourcev2.ActionScopeInstance
@@ -115,6 +113,10 @@ func (k *kind) action(ctx context.Context, client *proxmox.Client, request resou
 	switch request.Action {
 	case actionConfig:
 		return k.readConfig(ctx, client, id)
+	case actionMigrate:
+		return k.migrate(ctx, client, id, request.Input)
+	case actionClone:
+		return k.clone(ctx, client, id, request.Input)
 	}
 	for _, a := range k.actions() {
 		if a.descriptor.ID == request.Action {

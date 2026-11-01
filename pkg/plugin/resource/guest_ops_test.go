@@ -60,7 +60,7 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/config"):
 		_, _ = w.Write([]byte(`{"data":{"cores":2,"scsi0":"local-lvm:vm-100-disk-0,size=8G","digest":"d1"}}`))
 	case r.Method == http.MethodGet && strings.Contains(path, "/tasks/"):
-		if path != "/nodes/pve2/tasks/UPID:pve2:00001:task/status" {
+		if !strings.HasSuffix(path, "/tasks/UPID:pve2:00001:task/status") {
 			f.t.Errorf("task polled at %s", path)
 		}
 		_, _ = w.Write([]byte(`{"data":{"status":"` + f.taskStatus + `","exitstatus":"` + f.exitStatus + `"}}`))
@@ -97,8 +97,19 @@ func ref(typ, id string) resourcev2.ResourceReference {
 }
 
 func act(k *kind, client *proxmox.Client, action, id string) (map[string]any, error) {
+	return actWith(k, client, action, id, nil)
+}
+
+func actWith(k *kind, client *proxmox.Client, action, id string, params map[string]any) (map[string]any, error) {
+	var input resourcev2.Value
+	if params != nil {
+		var err error
+		if input, err = resourcev2.ValueFromNative(params); err != nil {
+			return nil, err
+		}
+	}
 	v, err := k.action(ctx, client, resourcev2.ActionRequest{
-		Route: resourcev2.AccessRoute{Connection: "c"}, Reference: ref(k.typ, id), Action: action,
+		Route: resourcev2.AccessRoute{Connection: "c"}, Reference: ref(k.typ, id), Action: action, Input: input,
 	})
 	if err != nil {
 		return nil, err
@@ -135,11 +146,11 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 	want := map[string]kindExpectation{
 		typeVM: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop"},
-			actions: "start,shutdown,reboot,stop,suspend,resume,config",
+			actions: "start,shutdown,reboot,stop,suspend,resume,migrate,clone,config",
 		},
 		typeContainer: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop"},
-			actions: "start,shutdown,reboot,stop,config",
+			actions: "start,shutdown,reboot,stop,migrate,clone,config",
 		},
 	}
 	allWrites := []resourcev2.Operation{
@@ -437,5 +448,79 @@ func TestCreateValidatesIDAndPostsConfig(t *testing.T) {
 	_, err = mutate(vms, client, "create", "qemu/101", map[string]any{"node": "pve2"})
 	if opErr := opError(t, vms, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Allocate") {
 		t.Fatalf("create 403: %+v", opErr)
+	}
+}
+
+func TestMigrateMapsParamsPerGuestType(t *testing.T) {
+	f, client := newFakePVE(t)
+
+	res, err := actWith(vms, client, "migrate", "qemu/100", map[string]any{"target": "pve1", "online": true, "withLocalDisks": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["message"] != "Migrated web01 (qemu/100) to pve1." || res["upid"] != "UPID:pve2:00001:task" {
+		t.Fatalf("unexpected result %+v", res)
+	}
+	want := url.Values{"target": {"pve1"}, "online": {"1"}, "with-local-disks": {"1"}}
+	if w := f.writes[0]; w.path != "/nodes/pve2/qemu/100/migrate" || w.form.Encode() != want.Encode() {
+		t.Fatalf("vm migrate %s %v", w.path, w.form)
+	}
+
+	if _, err := actWith(cts, client, "migrate", "lxc/200", map[string]any{"target": "pve2", "restart": true}); err != nil {
+		t.Fatal(err)
+	}
+	want = url.Values{"target": {"pve2"}, "restart": {"1"}}
+	if w := f.writes[1]; w.path != "/nodes/pve1/lxc/200/migrate" || w.form.Encode() != want.Encode() {
+		t.Fatalf("container migrate %s %v", w.path, w.form)
+	}
+
+	_, err = actWith(vms, client, "migrate", "qemu/100", map[string]any{})
+	if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
+		t.Fatalf("migrate without target: %+v", opErr)
+	}
+	_, err = actWith(vms, client, "migrate", "qemu/100", map[string]any{"target": "pve1", "online": "yes"})
+	if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
+		t.Fatalf("migrate with a string flag: %+v", opErr)
+	}
+	if len(f.writes) != 2 {
+		t.Fatalf("invalid migrates wrote %+v", f.writes[2:])
+	}
+}
+
+func TestCloneMapsParams(t *testing.T) {
+	f, client := newFakePVE(t)
+
+	res, err := actWith(vms, client, "clone", "qemu/100", map[string]any{
+		"newid": 101, "name": "web02", "target": "pve1", "full": false, "storage": "local-lvm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["newID"] != "qemu/101" || res["upid"] != "UPID:pve2:00001:task" {
+		t.Fatalf("unexpected result %+v", res)
+	}
+	want := url.Values{"newid": {"101"}, "name": {"web02"}, "target": {"pve1"}, "full": {"0"}, "storage": {"local-lvm"}}
+	if w := f.writes[0]; w.method != http.MethodPost || w.path != "/nodes/pve2/qemu/100/clone" || w.form.Encode() != want.Encode() {
+		t.Fatalf("clone %s %v", w.path, w.form)
+	}
+
+	if _, err := actWith(cts, client, "clone", "lxc/200", map[string]any{"newid": 201, "name": "ct2"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.writes[1]; w.path != "/nodes/pve1/lxc/200/clone" || w.form.Encode() != (url.Values{"newid": {"201"}, "hostname": {"ct2"}}).Encode() {
+		t.Fatalf("container clone %s %v", w.path, w.form)
+	}
+
+	for _, params := range []map[string]any{{}, {"newid": 99}, {"newid": "101"}} {
+		_, err := actWith(vms, client, "clone", "qemu/100", params)
+		if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
+			t.Fatalf("%v: %+v", params, opErr)
+		}
+	}
+
+	f.writeCode, f.writeBody = http.StatusForbidden, `{"data":null}`
+	_, err = actWith(vms, client, "clone", "qemu/100", map[string]any{"newid": 102})
+	if opErr := opError(t, vms, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Clone") {
+		t.Fatalf("clone 403: %+v", opErr)
 	}
 }
