@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -119,39 +120,68 @@ func mutate(k *kind, client *proxmox.Client, op, id string, input map[string]any
 	})
 }
 
-func TestOnlyGuestKindsHaveActionsAndWrites(t *testing.T) {
+// kindExpectation is the write surface one type declares.
+type kindExpectation struct {
+	writes    []resourcev2.Operation
+	actions   string
+	dangerous []string
+	watched   bool
+}
+
+func TestKindsDeclareTheirWrites(t *testing.T) {
+	guestWrites := []resourcev2.Operation{
+		resourcev2.OperationAction, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
+	}
+	want := map[string]kindExpectation{
+		typeVM: {
+			writes: guestWrites, watched: true, dangerous: []string{"stop"},
+			actions: "start,shutdown,reboot,stop,suspend,resume,config",
+		},
+		typeContainer: {
+			writes: guestWrites, watched: true, dangerous: []string{"stop"},
+			actions: "start,shutdown,reboot,stop,config",
+		},
+	}
+	allWrites := []resourcev2.Operation{
+		resourcev2.OperationAction, resourcev2.OperationCreate, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
+	}
 	for _, k := range append(append([]*kind{}, staticKinds...), cephKinds...) {
-		r := k.registration()
-		guest := k.typ == typeVM || k.typ == typeContainer
-		if (r.Action != nil) != guest || (r.Mutate != nil) != guest {
-			t.Errorf("%s: action/mutate registered = %v/%v, want %v", k.typ, r.Action != nil, r.Mutate != nil, guest)
+		exp, ok := want[k.typ]
+		if !ok {
+			exp = kindExpectation{watched: true}
 		}
+		r := k.registration()
 		var declared []resourcev2.Operation
 		for _, c := range k.resourceType().Capabilities {
 			declared = append(declared, c.Operation)
 		}
-		for _, op := range []resourcev2.Operation{resourcev2.OperationAction, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete} {
-			if hasOp := containsOp(declared, op); hasOp != guest {
-				t.Errorf("%s: declares %s = %v, want %v", k.typ, op, hasOp, guest)
+		for _, op := range allWrites {
+			if got, w := containsOp(declared, op), containsOp(exp.writes, op); got != w {
+				t.Errorf("%s: declares %s = %v, want %v", k.typ, op, got, w)
 			}
 		}
-	}
-
-	ids := func(k *kind) string {
-		var out []string
-		for _, a := range k.actionDescriptors() {
+		if got := containsOp(declared, resourcev2.OperationUpdate); got != exp.watched || (r.Watch != nil) != exp.watched {
+			t.Errorf("%s: watched = %v/%v, want %v", k.typ, got, r.Watch != nil, exp.watched)
+		}
+		if (r.Mutate != nil) != (len(exp.writes) > 0) {
+			t.Errorf("%s: mutate registered = %v", k.typ, r.Mutate != nil)
+		}
+		if (r.Action != nil) != (exp.actions != "") {
+			t.Errorf("%s: action registered = %v", k.typ, r.Action != nil)
+		}
+		var ids []string
+		for _, a := range r.Actions {
 			if a.Scope != resourcev2.ActionScopeInstance {
-				t.Fatalf("%s: scope %q", a.ID, a.Scope)
+				t.Errorf("%s %s: scope %q", k.typ, a.ID, a.Scope)
 			}
-			if a.Dangerous != (a.ID == "stop") {
-				t.Fatalf("%s: dangerous %v", a.ID, a.Dangerous)
+			if a.Dangerous != slices.Contains(exp.dangerous, a.ID) {
+				t.Errorf("%s %s: dangerous %v", k.typ, a.ID, a.Dangerous)
 			}
-			out = append(out, a.ID)
+			ids = append(ids, a.ID)
 		}
-		return strings.Join(out, ",")
-	}
-	if vm, ct := ids(vms), ids(cts); vm != "start,shutdown,reboot,stop,suspend,resume,config" || ct != "start,shutdown,reboot,stop,config" {
-		t.Fatalf("vm actions %s, container actions %s", vm, ct)
+		if got := strings.Join(ids, ","); got != exp.actions {
+			t.Errorf("%s: actions %s, want %s", k.typ, got, exp.actions)
+		}
 	}
 }
 

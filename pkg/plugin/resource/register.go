@@ -31,7 +31,7 @@ const (
 	typeCephFilesystem  = "proxmox::v1::CephFilesystem"
 	representationID    = "native"
 	representationRev   = "1"
-	catalogRevisionBase = "1"
+	catalogRevisionBase = "2"
 )
 
 // staticKinds are served on every connection; cephKinds only on connections
