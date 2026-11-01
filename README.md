@@ -218,6 +218,16 @@ right-click). Each needs a privilege beyond `PVEAuditor`; without it the action 
 | Shell | Node, CT, VM (serial console) | `termproxy` + `vncwebsocket` | `Sys.Console` / `VM.Console`, plus a console login (see [setup](#3-write-the-config-file)) |
 | Metrics (CPU, memory, network, disk I/O; node load, IO wait, root disk) | Node, VM, CT | `GET …/rrddata` | `Sys.Audit` / `VM.Audit` |
 | Logs (journal of the node or of `ceph-osd@N`, `ceph-mon@…`, `ceph-mgr@…`, `ceph-mds@…`) | Node, Ceph OSD/Monitor/Manager/MDS | `GET /nodes/{node}/syslog` | `Sys.Syslog` |
+| Create guest | VM, CT | `POST /nodes/{node}/{qemu,lxc}` | `VM.Allocate` |
+| Clone guest | VM, CT | `POST …/clone` | `VM.Clone` |
+| Migrate guest | VM, CT | `POST …/migrate` | `VM.Migrate` |
+| Guest agent command | VM | `POST …/agent/exec`, `GET …/agent/exec-status` | `VM.GuestAgent.Unrestricted` (PVE 9) or `VM.Monitor` (PVE 8) |
+| Create, delete or roll back snapshot | Snapshot | `POST`/`DELETE …/snapshot`, `POST …/snapshot/{name}/rollback` | `VM.Snapshot` / `VM.Snapshot.Rollback` |
+| Task status and log | Task | `GET /cluster/tasks`, `GET /nodes/{node}/tasks/{upid}/status` and `/log` | PVE task access permissions |
+
+The resource catalog exposes these operations to MCP clients. Guest creation requires an ID in
+the form `qemu/<vmid>` or `lxc/<vmid>` and a `node` field in the input. Guest agent commands
+require the QEMU guest agent. A command can continue after its timeout.
 
 Writes wait up to a minute for their Proxmox task and report its failure; a task still running then
 is reported as such. Config changes Proxmox cannot apply to a running guest stay pending until its
