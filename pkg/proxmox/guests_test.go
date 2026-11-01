@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +147,95 @@ func TestUpdateGuestConfigEncodesForm(t *testing.T) {
 	}
 	if r.form.Encode() != want.Encode() {
 		t.Fatalf("form %v, want %v", r.form, want)
+	}
+}
+
+func TestCreateGuestPostsVMIDAndConfig(t *testing.T) {
+	var got []recorded
+	client := guestServer(t, `"UPID:pve1:0001:create"`, &got)
+
+	upid, err := client.CreateGuest(context.Background(), "pve1", "lxc", 300, map[string]string{"hostname": "ct3"})
+	if err != nil || upid != "UPID:pve1:0001:create" {
+		t.Fatalf("CreateGuest: %q %v", upid, err)
+	}
+	r := got[0]
+	if r.method != http.MethodPost || r.path != "/api2/json/nodes/pve1/lxc" ||
+		r.form.Encode() != (url.Values{"vmid": {"300"}, "hostname": {"ct3"}}).Encode() {
+		t.Fatalf("unexpected request %+v", r)
+	}
+}
+
+func TestGuestWriteMethodsPostToTheirPaths(t *testing.T) {
+	var got []recorded
+	client := guestServer(t, `"UPID:pve2:0001:x"`, &got)
+	ctx := context.Background()
+	g := GuestRef{ID: "qemu/100", Node: "pve2"}
+
+	calls := []struct {
+		call   func() (string, error)
+		method string
+		path   string
+		form   url.Values
+	}{
+		{func() (string, error) { return client.CloneGuest(ctx, g, url.Values{"newid": {"101"}}) },
+			http.MethodPost, "/clone", url.Values{"newid": {"101"}}},
+		{func() (string, error) { return client.MigrateGuest(ctx, g, url.Values{"target": {"pve1"}}) },
+			http.MethodPost, "/migrate", url.Values{"target": {"pve1"}}},
+		{func() (string, error) { return client.CreateSnapshot(ctx, g, "pre", "before upgrade", true) },
+			http.MethodPost, "/snapshot", url.Values{"snapname": {"pre"}, "description": {"before upgrade"}, "vmstate": {"1"}}},
+		{func() (string, error) { return client.DeleteSnapshot(ctx, g, "pre") },
+			http.MethodDelete, "/snapshot/pre", url.Values{}},
+		{func() (string, error) { return client.RollbackSnapshot(ctx, g, "pre") },
+			http.MethodPost, "/snapshot/pre/rollback", url.Values{}},
+	}
+	for i, c := range calls {
+		upid, err := c.call()
+		if err != nil || upid != "UPID:pve2:0001:x" {
+			t.Fatalf("call %d: %q %v", i, upid, err)
+		}
+		r := got[i]
+		if r.method != c.method || r.path != "/api2/json/nodes/pve2/qemu/100"+c.path || r.form.Encode() != c.form.Encode() {
+			t.Fatalf("call %d: unexpected request %+v", i, r)
+		}
+	}
+}
+
+func TestAgentExecSendsOneCommandValuePerArgument(t *testing.T) {
+	var got []recorded
+	client := guestServer(t, `{"pid":42}`, &got)
+	g := GuestRef{ID: "qemu/100", Node: "pve2"}
+
+	pid, err := client.AgentExec(context.Background(), g, []string{"sh", "-c", "echo hi"}, "in")
+	if err != nil || pid != 42 {
+		t.Fatalf("AgentExec: %d %v", pid, err)
+	}
+	r := got[0]
+	if r.method != http.MethodPost || r.path != "/api2/json/nodes/pve2/qemu/100/agent/exec" ||
+		strings.Join(r.form["command"], "|") != "sh|-c|echo hi" || r.form.Get("input-data") != "in" {
+		t.Fatalf("unexpected request %+v", r)
+	}
+}
+
+func TestAgentExecStatusAndSnapshotsRead(t *testing.T) {
+	var got []recorded
+	client := guestServer(t, `{"exited":1,"exitcode":3,"out-data":"hi\n","out-truncated":1}`, &got)
+	g := GuestRef{ID: "qemu/100", Node: "pve2"}
+
+	status, err := client.AgentExecStatus(context.Background(), g, 42)
+	if err != nil || status.Exited != 1 || status.ExitCode == nil || *status.ExitCode != 3 ||
+		status.OutData != "hi\n" || status.OutTruncated != 1 {
+		t.Fatalf("AgentExecStatus: %+v %v", status, err)
+	}
+	if r := got[0]; r.method != http.MethodGet || r.path != "/api2/json/nodes/pve2/qemu/100/agent/exec-status" || r.query.Get("pid") != "42" {
+		t.Fatalf("unexpected request %+v", r)
+	}
+
+	client = guestServer(t, `[{"name":"pre"},{"name":"current"}]`, &got)
+	snaps, err := client.GuestSnapshots(context.Background(), g)
+	if err != nil || len(snaps) != 2 {
+		t.Fatalf("GuestSnapshots: %s %v", snaps, err)
+	}
+	if r := got[1]; r.method != http.MethodGet || r.path != "/api2/json/nodes/pve2/qemu/100/snapshot" {
+		t.Fatalf("unexpected request %+v", r)
 	}
 }
