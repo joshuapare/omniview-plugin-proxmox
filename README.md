@@ -5,8 +5,8 @@ containers and the cluster's Ceph (status, pools, OSDs, monitors, managers, meta
 CephFS). Guests can be started, shut down, stopped, rebooted, edited and destroyed; nodes and guests
 have metrics and shells; nodes and Ceph daemons have logs. See [Operations](#operations).
 
-Requires Omniview 0.11 or later: the plugin is built on plugin-sdk 0.9 (resource API v2) and
-`@omniviewdev/runtime` 0.11.
+Requires Omniview 0.14 or later: the plugin is built on plugin-sdk 0.10 (resource API v2,
+host-owned settings) and `@omniviewdev/runtime` 0.14.
 
 ## Setup
 
@@ -98,8 +98,9 @@ A JSON reply with `"version"` means the network path, certificate and token are 
 ### 5. Connect
 
 Connections are loaded when the plugin starts, so restart Omniview (or, in a development
-workspace, `omniview-dev plugin dev restart proxmox`) after adding or removing clusters. Edits to an
-existing entry apply on its next connect.
+workspace, `omniview-dev plugin dev restart proxmox`) after adding or removing clusters. The
+**Cluster config files** setting is likewise marked as requiring a restart: Omniview shows it as
+pending until the plugin restarts. Edits to an existing entry apply on its next connect.
 
 Open **Proxmox VE** in the sidebar and click the cluster row; it connects and opens the cluster's
 [Summary](#summary-page). Connecting asks the cluster for `ceph status` once; the **Ceph** section
