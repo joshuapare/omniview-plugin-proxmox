@@ -130,7 +130,7 @@ type kindExpectation struct {
 
 func TestKindsDeclareTheirWrites(t *testing.T) {
 	guestWrites := []resourcev2.Operation{
-		resourcev2.OperationAction, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
+		resourcev2.OperationAction, resourcev2.OperationCreate, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
 	}
 	want := map[string]kindExpectation{
 		typeVM: {
@@ -398,5 +398,44 @@ func TestActionParamHelpers(t *testing.T) {
 	str, _ := resourcev2.ValueFromNative("x")
 	if _, err := actionParams(str); err == nil {
 		t.Fatal("non-object input accepted")
+	}
+}
+
+func TestCreateValidatesIDAndPostsConfig(t *testing.T) {
+	f, client := newFakePVE(t)
+
+	for _, id := range []string{"lxc/100", "qemu/", "qemu/abc", "qemu/0", "qemu/0100", "100"} {
+		_, err := mutate(vms, client, "create", id, map[string]any{"node": "pve2"})
+		if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" || !strings.Contains(opErr.Message, "qemu/<vmid>") {
+			t.Fatalf("%s: %+v", id, opErr)
+		}
+	}
+	for _, input := range []map[string]any{{"cores": 2}, {"node": "pve2", "digest": "d"}, {"node": "pve2", "tags": nil}} {
+		_, err := mutate(vms, client, "create", "qemu/100", input)
+		if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
+			t.Fatalf("%v: %+v", input, opErr)
+		}
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("invalid creates wrote %+v", f.writes)
+	}
+
+	rec, err := mutate(vms, client, "create", "qemu/100", map[string]any{"node": "pve2", "name": "web01", "cores": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Reference.Address.ID != "qemu/100" {
+		t.Fatalf("unexpected record %+v", rec)
+	}
+	w := f.writes[0]
+	want := url.Values{"vmid": {"100"}, "name": {"web01"}, "cores": {"2"}}
+	if w.method != http.MethodPost || w.path != "/nodes/pve2/qemu" || w.form.Encode() != want.Encode() {
+		t.Fatalf("unexpected create %s %s %v", w.method, w.path, w.form)
+	}
+
+	f.writeCode, f.writeBody = http.StatusForbidden, `{"data":null}`
+	_, err = mutate(vms, client, "create", "qemu/101", map[string]any{"node": "pve2"})
+	if opErr := opError(t, vms, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Allocate") {
+		t.Fatalf("create 403: %+v", opErr)
 	}
 }

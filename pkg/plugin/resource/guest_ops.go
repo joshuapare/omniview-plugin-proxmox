@@ -166,6 +166,12 @@ func (k *kind) readConfig(ctx context.Context, client *proxmox.Client, id string
 // mutate applies a config update or deletes the guest.
 func (k *kind) mutate(ctx context.Context, client *proxmox.Client, request resourcev2.MutationRequest) (resourcev2.Record, error) {
 	switch request.Operation {
+	case "create":
+		if request.ExpectedRevision != nil {
+			return resourcev2.Record{}, resourcev2.NewError("INVALID_REQUEST",
+				"Guest creation takes no expected revision.")
+		}
+		return k.create(ctx, client, request)
 	case "update":
 		if request.ExpectedRevision != nil {
 			return resourcev2.Record{}, resourcev2.NewError("INVALID_REQUEST",
@@ -175,8 +181,49 @@ func (k *kind) mutate(ctx context.Context, client *proxmox.Client, request resou
 	case "delete":
 		return k.delete(ctx, client, request.Reference)
 	default:
-		return resourcev2.Record{}, resourcev2.NewError("UNSUPPORTED", "Guests can only be updated or deleted.")
+		return resourcev2.Record{}, resourcev2.NewError("UNSUPPORTED", "Guests can only be created, updated or deleted.")
 	}
+}
+
+// create makes a new guest from the input, an object of config keys to
+// values plus the node to create it on, and returns it. The ID names the
+// VMID: qemu/100.
+func (k *kind) create(ctx context.Context, client *proxmox.Client, request resourcev2.MutationRequest) (resourcev2.Record, error) {
+	id := request.Reference.Address.ID
+	vmidText, ok := strings.CutPrefix(id, k.guestType+"/")
+	vmid, err := strconv.Atoi(vmidText)
+	if !ok || err != nil || vmid <= 0 || strconv.Itoa(vmid) != vmidText {
+		return resourcev2.Record{}, &resourcev2.ResourceOperationError{
+			Code: "INVALID_INPUT", Title: "Invalid ID",
+			Message: "Create needs an ID of the form " + k.guestType + "/<vmid>.",
+		}
+	}
+	set, del, digest, err := configChanges(request.Input)
+	if err != nil {
+		return resourcev2.Record{}, err
+	}
+	invalid := func(msg string) error {
+		return &resourcev2.ResourceOperationError{Code: "INVALID_INPUT", Title: "Invalid configuration", Message: msg}
+	}
+	if len(del) > 0 || digest != "" {
+		return resourcev2.Record{}, invalid("A new guest takes no digest and no empty or null values.")
+	}
+	node := set["node"]
+	if node == "" {
+		return resourcev2.Record{}, invalid("node is required: the node to create the guest on.")
+	}
+	delete(set, "node")
+	what := "create " + k.noun + " " + id
+	upid, err := client.CreateGuest(ctx, node, k.guestType, vmid, set)
+	if err != nil {
+		return resourcev2.Record{}, &writeError{privilege: privAllocate, what: what, err: err}
+	}
+	if _, err := waitTask(ctx, client, node, upid); err != nil {
+		return resourcev2.Record{}, &writeError{privilege: privAllocate, what: what, err: err}
+	}
+	return k.get(ctx, client, resourcev2.GetRequest{
+		Route: request.Route, Reference: request.Reference, Representation: representationID,
+	})
 }
 
 // update applies the input, an object of config keys to values, to the

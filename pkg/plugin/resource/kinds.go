@@ -85,7 +85,8 @@ func guestKind(typ, label, noun, guestType string) *kind {
 	k.guestType = guestType
 	k.writes = &kindWrites{
 		operations: []resourcev2.Operation{
-			resourcev2.OperationAction, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
+			resourcev2.OperationAction, resourcev2.OperationCreate,
+			resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
 		},
 		descriptors: k.actionDescriptors,
 		action:      k.action,
