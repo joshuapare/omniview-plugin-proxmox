@@ -123,13 +123,53 @@ func TestTaskFollowEndsAfterTheTaskStops(t *testing.T) {
 	f.mu.Lock()
 	f.stopped = true
 	f.mu.Unlock()
+	// Let the follower see the stopped task and end its polling.
+	time.Sleep(100 * time.Millisecond)
+	f.mu.Lock()
+	f.lines = append(f.lines, "after stop")
+	reads := len(f.starts)
+	f.mu.Unlock()
 	select {
 	case l, ok := <-lines:
-		if ok {
-			t.Fatalf("unexpected line %q", l)
+		if !ok {
+			t.Fatal("followed stream closed after the task stopped")
+		}
+		t.Fatalf("unexpected line %q", l)
+	case <-time.After(150 * time.Millisecond):
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.starts) != reads {
+		t.Fatalf("log polled %d more times after the task stopped", len(f.starts)-reads)
+	}
+	_ = r.Close()
+}
+
+func TestTaskEmptyLogPlaceholderIsDropped(t *testing.T) {
+	f := &fakeTask{lines: []string{"no content"}}
+	tl := newTaskLog(t, f)
+
+	r, err := tl.stream(context.Background(), sdklogs.LogStreamRequest{Follow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := collect(r)
+	f.mu.Lock()
+	f.lines = []string{"starting"}
+	f.mu.Unlock()
+	select {
+	case l := <-lines:
+		if l != "starting" {
+			t.Fatalf("got %q, want the first real line", l)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("stream did not end after the task stopped")
+		t.Fatal("timed out")
+	}
+	_ = r.Close()
+	for _, start := range f.starts {
+		if start != 0 {
+			t.Fatalf("read from %d before any real line", start)
+		}
 	}
 }
 

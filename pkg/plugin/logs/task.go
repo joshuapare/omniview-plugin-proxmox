@@ -53,18 +53,19 @@ type taskLog struct {
 }
 
 // stream delivers the last TailLines lines (all when 0) and, with Follow,
-// the new lines until the task has stopped and its log has no more.
+// the new lines until the task has stopped and its log has no more; the
+// followed reader then stays open, without lines, until ctx ends.
 func (t *taskLog) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.ReadCloser, error) {
 	backlog, next, err := t.backlog(ctx, int(req.TailLines))
 	if err != nil {
 		if !permanent(err) {
 			return nil, err // transient: the SDK reconnects
 		}
-		return pipe(ctx, false, func(w *lineWriter) {
+		return pipe(ctx, req.Follow, func(w *lineWriter) {
 			w.message(time.Now(), t.describe(err))
 		}), nil
 	}
-	return pipe(ctx, false, func(w *lineWriter) {
+	return pipe(ctx, req.Follow, func(w *lineWriter) {
 		if !w.lines(backlog) || !req.Follow {
 			return
 		}
@@ -86,6 +87,7 @@ func (t *taskLog) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.
 			if err != nil {
 				continue
 			}
+			lines = withoutPlaceholder(lines, next)
 			if len(lines) == 0 {
 				if stopped {
 					return
@@ -109,6 +111,7 @@ func (t *taskLog) backlog(ctx context.Context, tail int) (lines []parsedLine, ne
 		if err != nil {
 			return nil, 0, err
 		}
+		page = withoutPlaceholder(page, next)
 		all = append(all, page...)
 		if len(page) > 0 {
 			next = int(page[len(page)-1].N)
@@ -142,6 +145,15 @@ func (t *taskLog) describe(err error) string {
 		return fmt.Sprintf("cannot read the log of task %s: the API token needs Sys.Audit on /nodes/%s (%v)", t.upid, t.node, err)
 	}
 	return fmt.Sprintf("cannot read the log of task %s: %v", t.upid, err)
+}
+
+// withoutPlaceholder drops the single "no content" line Proxmox returns
+// for an empty log read from its start.
+func withoutPlaceholder(lines []proxmox.TaskLogLine, start int) []proxmox.TaskLogLine {
+	if start == 0 && len(lines) == 1 && lines[0].N == 1 && lines[0].T == "no content" {
+		return nil
+	}
+	return lines
 }
 
 func taskLines(lines []proxmox.TaskLogLine) []parsedLine {
