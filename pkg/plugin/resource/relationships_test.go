@@ -34,6 +34,7 @@ func TestDeclaredEdgesResolveToListedResources(t *testing.T) {
 		"/api2/json/nodes/pve1/qemu/100/config": `{"scsi0":"local-lvm:vm-100-disk-0,size=32G","scsi1":"nfs:100/vm-100-disk-1.qcow2"}`,
 		"/api2/json/nodes/pve2/qemu/101/config": `{"virtio0":"nfs:101/vm-101-disk-0.qcow2"}`,
 		"/api2/json/nodes/pve1/lxc/200/config":  `{"rootfs":"local-lvm:subvol-200-disk-0,size=8G"}`,
+		"/api2/json/cluster/tasks":              `[{"upid":"UPID:pve2:0001:0002:0003:qmstart:101:root@pam:","node":"pve2"}]`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := configs[r.URL.Path]
@@ -100,6 +101,7 @@ func TestDeclaredEdgesResolveToListedResources(t *testing.T) {
 		"storage/pve1/local-lvm": {"runs_on node/pve1"},
 		"storage/pve1/nfs":       {"runs_on node/pve1"},
 		"storage/pve2/nfs":       {"runs_on node/pve2"},
+		"UPID:pve2:0001:0002:0003:qmstart:101:root@pam:": {"runs_on node/pve2"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("edges:\n got %v\nwant %v", got, want)

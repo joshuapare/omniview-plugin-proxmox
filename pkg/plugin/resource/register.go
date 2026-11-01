@@ -29,6 +29,7 @@ const (
 	typeCephManager     = "proxmox::v1::CephManager"
 	typeCephMDS         = "proxmox::v1::CephMetadataServer"
 	typeCephFilesystem  = "proxmox::v1::CephFilesystem"
+	typeTask            = "proxmox::v1::Task"
 	representationID    = "native"
 	representationRev   = "1"
 	catalogRevisionBase = "2"
@@ -42,6 +43,7 @@ var (
 		clusterKind(typeStorage, "Storage", "storage", proxmox.ResourceTypeStorage, "storage"),
 		guestKind(typeVM, "Virtual Machines", "virtual machine", "qemu"),
 		guestKind(typeContainer, "Containers", "container", "lxc"),
+		taskKind(),
 	}
 	cephKinds = []*kind{
 		cephKind(typeCephCluster, "Ceph Status", "Ceph cluster", (*proxmox.Client).CephStatus),

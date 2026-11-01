@@ -47,6 +47,7 @@ var (
 	relGuestNode    = relationship(resourcev2.RelRunsOn, typeNode, "runs on", "runs", "many-to-one", "node")
 	relGuestStorage = relationship(resourcev2.RelUses, typeStorage, "uses storage", "used by", "many-to-many", "storage")
 	relStorageNode  = relationship(resourcev2.RelRunsOn, typeNode, "attached to", "has storage", "many-to-one", "node")
+	relTaskNode     = relationship(resourcev2.RelRunsOn, typeNode, "ran on", "ran", "many-to-one", "node")
 )
 
 // relationshipsOf returns the edges the host indexes from refsField for one
