@@ -16,9 +16,10 @@ import (
 // lister returns every native entry of one kind.
 type lister func(context.Context, *proxmox.Client) ([]proxmox.Entry, error)
 
-// kind serves one read-only resource type from a lister. Proxmox has no
-// cheaper per-object read for most kinds, so Get, Enumerate and Watch are all
-// built on the full list. Bodies are the native entries, plus a refsField
+// kind serves one resource type from a lister. Proxmox has no cheaper
+// per-object read for most kinds, so Get, Enumerate and Watch are built on
+// the full list unless the kind has a getter. Kinds with writes add actions
+// and mutations. Bodies are the native entries, plus a refsField
 // object on guests and storage, identified by the lister's ID: Proxmox's own
 // cluster-unique `id` for /cluster/resources kinds (qemu/100, node/pve1,
 // storage/pve1/local), the Ceph name otherwise. Types have no identity or

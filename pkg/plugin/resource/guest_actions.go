@@ -40,7 +40,8 @@ var cloneAction = resourcev2.ActionDescriptor{
 
 var guestExecAction = resourcev2.ActionDescriptor{
 	ID: actionGuestExec, Label: "Run Command", Icon: "LuTerminal", Dangerous: true,
-	Description: "Run a command through the QEMU guest agent and return its exit code and output. Needs the agent running in the VM.",
+	Description: "Run a command through the QEMU guest agent and return its exit code and output. Needs the agent running in the VM. " +
+		"On timeout the result has exited:false and the guest process may keep running.",
 	ParamsSchema: &resourcev2.Schema{
 		Properties: map[string]resourcev2.SchemaProperty{
 			"command":   {Type: resourcev2.SchemaArray, Description: "Program and arguments; no shell is implied."},
