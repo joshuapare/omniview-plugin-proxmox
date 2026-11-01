@@ -2,12 +2,23 @@ package resource
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strconv"
+	"time"
 
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
+)
+
+// agentPollInterval is how often guest-exec reads the command's status.
+var agentPollInterval = time.Second
+
+// Bounds of the guest-exec timeout, in seconds.
+const (
+	guestExecDefaultTimeout = 30
+	guestExecMaxTimeout     = 100
 )
 
 func ptrFloat(f float64) *float64 { return &f }
@@ -24,6 +35,22 @@ var cloneAction = resourcev2.ActionDescriptor{
 			"storage": {Type: resourcev2.SchemaString, Description: "Target storage for a full clone."},
 		},
 		Required: []string{"newid"},
+	},
+}
+
+var guestExecAction = resourcev2.ActionDescriptor{
+	ID: actionGuestExec, Label: "Run Command", Icon: "LuTerminal", Dangerous: true,
+	Description: "Run a command through the QEMU guest agent and return its exit code and output. Needs the agent running in the VM.",
+	ParamsSchema: &resourcev2.Schema{
+		Properties: map[string]resourcev2.SchemaProperty{
+			"command":   {Type: resourcev2.SchemaArray, Description: "Program and arguments; no shell is implied."},
+			"inputData": {Type: resourcev2.SchemaString, Description: "Data written to the command's standard input."},
+			"timeoutSeconds": {
+				Type: resourcev2.SchemaInteger, Minimum: ptrFloat(1), Maximum: ptrFloat(guestExecMaxTimeout),
+				Description: "How long to wait for the command to exit; default 30.",
+			},
+		},
+		Required: []string{"command"},
 	},
 }
 
@@ -143,4 +170,81 @@ func (k *kind) clone(ctx context.Context, client *proxmox.Client, id string, inp
 		message = "Cloned " + g.Label() + " to " + newID + "."
 	}
 	return resourcev2.ValueFromNative(map[string]any{"message": message, "upid": upid, "newID": newID})
+}
+
+// guestExec runs a command through the QEMU guest agent and polls until it
+// exits or the timeout ends.
+func (k *kind) guestExec(ctx context.Context, client *proxmox.Client, id string, input resourcev2.Value) (resourcev2.Value, error) {
+	params, err := actionParams(input)
+	if err != nil {
+		return resourcev2.Value{}, err
+	}
+	command, err := stringListParam(params, "command")
+	if err != nil {
+		return resourcev2.Value{}, err
+	}
+	if len(command) == 0 || command[0] == "" {
+		return resourcev2.Value{}, invalidParams("command is required: the program and its arguments.")
+	}
+	inputData, err := stringParam(params, "inputData", false)
+	if err != nil {
+		return resourcev2.Value{}, err
+	}
+	timeout, ok, err := intParam(params, "timeoutSeconds")
+	if err != nil {
+		return resourcev2.Value{}, err
+	}
+	if !ok {
+		timeout = guestExecDefaultTimeout
+	}
+	if timeout < 1 || timeout > guestExecMaxTimeout {
+		return resourcev2.Value{}, invalidParams("timeoutSeconds must be between 1 and 100.")
+	}
+	g, err := k.find(ctx, client, id)
+	if err != nil {
+		return resourcev2.Value{}, err
+	}
+	what := "run a command through the guest agent of " + k.noun + " " + id
+	pid, err := client.AgentExec(ctx, g, command, inputData)
+	if err != nil {
+		return resourcev2.Value{}, &writeError{privilege: privGuestAgent, what: what, err: err}
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(agentPollInterval)
+	defer ticker.Stop()
+	var status proxmox.AgentExecStatus
+	for {
+		status, err = client.AgentExecStatus(waitCtx, g, pid)
+		if err != nil {
+			if ctx.Err() == nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				break
+			}
+			return resourcev2.Value{}, &writeError{privilege: privGuestAgent, what: what, err: err}
+		}
+		if status.Exited == 1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return resourcev2.Value{}, ctx.Err()
+		case <-waitCtx.Done():
+		case <-ticker.C:
+			continue
+		}
+		break
+	}
+	out := map[string]any{
+		"exited":          status.Exited == 1,
+		"stdout":          status.OutData,
+		"stderr":          status.ErrData,
+		"stdoutTruncated": status.OutTruncated == 1,
+		"stderrTruncated": status.ErrTruncated == 1,
+		"pid":             pid,
+	}
+	if status.Exited == 1 && status.ExitCode != nil {
+		out["exitCode"] = int64(*status.ExitCode)
+	}
+	return resourcev2.ValueFromNative(out)
 }

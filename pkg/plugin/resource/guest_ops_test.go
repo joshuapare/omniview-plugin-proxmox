@@ -28,6 +28,9 @@ type fakePVE struct {
 	writeBody  string
 	taskStatus string // "stopped" or "running"
 	exitStatus string
+	// execStatus answers successive agent exec-status reads; the last repeats.
+	execStatus []string
+	execReads  int
 }
 
 type recorded struct {
@@ -59,6 +62,9 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			`{"id":"lxc/200","type":"lxc","vmid":200,"node":"pve1","name":"ct","status":"stopped"}]}`))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/config"):
 		_, _ = w.Write([]byte(`{"data":{"cores":2,"scsi0":"local-lvm:vm-100-disk-0,size=8G","digest":"d1"}}`))
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/agent/exec-status"):
+		f.execReads++
+		_, _ = w.Write([]byte(`{"data":` + f.execStatus[min(f.execReads, len(f.execStatus))-1] + `}`))
 	case r.Method == http.MethodGet && strings.Contains(path, "/tasks/"):
 		if !strings.HasSuffix(path, "/tasks/UPID:pve2:00001:task/status") {
 			f.t.Errorf("task polled at %s", path)
@@ -145,8 +151,8 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 	}
 	want := map[string]kindExpectation{
 		typeVM: {
-			writes: guestWrites, watched: true, dangerous: []string{"stop"},
-			actions: "start,shutdown,reboot,stop,suspend,resume,migrate,clone,config",
+			writes: guestWrites, watched: true, dangerous: []string{"stop", "guest-exec"},
+			actions: "start,shutdown,reboot,stop,suspend,resume,migrate,clone,guest-exec,config",
 		},
 		typeContainer: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop"},
@@ -522,5 +528,46 @@ func TestCloneMapsParams(t *testing.T) {
 	_, err = actWith(vms, client, "clone", "qemu/100", map[string]any{"newid": 102})
 	if opErr := opError(t, vms, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Clone") {
 		t.Fatalf("clone 403: %+v", opErr)
+	}
+}
+
+func TestGuestExecPollsUntilExited(t *testing.T) {
+	f, client := newFakePVE(t)
+	defer func(d time.Duration) { agentPollInterval = d }(agentPollInterval)
+	agentPollInterval = 5 * time.Millisecond
+	f.writeBody = `{"data":{"pid":7}}`
+	f.execStatus = []string{`{"exited":0}`, `{"exited":0}`, `{"exited":1,"exitcode":3,"out-data":"hello\n","err-data":"e","out-truncated":1}`}
+
+	res, err := actWith(vms, client, "guest-exec", "qemu/100", map[string]any{"command": []any{"sh", "-c", "echo hello; exit 3"}, "inputData": "in"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.execReads != 3 || res["exited"] != true || res["exitCode"] != int64(3) || res["stdout"] != "hello\n" ||
+		res["stderr"] != "e" || res["stdoutTruncated"] != true || res["stderrTruncated"] != false || res["pid"] != int64(7) {
+		t.Fatalf("unexpected result after %d reads: %+v", f.execReads, res)
+	}
+	w := f.writes[0]
+	if w.path != "/nodes/pve2/qemu/100/agent/exec" || strings.Join(w.form["command"], "|") != "sh|-c|echo hello; exit 3" || w.form.Get("input-data") != "in" {
+		t.Fatalf("exec %s %v", w.path, w.form)
+	}
+
+	f.execStatus, f.execReads = []string{`{"exited":0}`}, 0
+	res, err = actWith(vms, client, "guest-exec", "qemu/100", map[string]any{"command": []any{"sleep", "999"}, "timeoutSeconds": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["exited"] != false || res["exitCode"] != nil {
+		t.Fatalf("timed out exec: %+v", res)
+	}
+
+	for _, params := range []map[string]any{{}, {"command": []any{}}, {"command": []any{1}}, {"command": []any{"ls"}, "timeoutSeconds": 101}} {
+		_, err := actWith(vms, client, "guest-exec", "qemu/100", params)
+		if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
+			t.Fatalf("%v: %+v", params, opErr)
+		}
+	}
+	_, err = actWith(cts, client, "guest-exec", "lxc/200", map[string]any{"command": []any{"ls"}})
+	if opErr := opError(t, cts, err); opErr.Code != "UNSUPPORTED" {
+		t.Fatalf("container guest-exec: %+v", opErr)
 	}
 }
