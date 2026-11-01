@@ -154,7 +154,7 @@ func TestCreateGuestPostsVMIDAndConfig(t *testing.T) {
 	var got []recorded
 	client := guestServer(t, `"UPID:pve1:0001:create"`, &got)
 
-	upid, err := client.CreateGuest(context.Background(), "pve1", "lxc", 300, map[string]string{"hostname": "ct3"})
+	upid, err := client.CreateGuest(context.Background(), "pve1", "lxc", 300, map[string]string{"hostname": "ct3", "vmid": "999"})
 	if err != nil || upid != "UPID:pve1:0001:create" {
 		t.Fatalf("CreateGuest: %q %v", upid, err)
 	}

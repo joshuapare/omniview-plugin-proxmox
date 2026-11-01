@@ -433,6 +433,10 @@ func TestCreateValidatesIDAndPostsConfig(t *testing.T) {
 			t.Fatalf("%s: %+v", id, opErr)
 		}
 	}
+	_, err := mutate(vms, client, "create", "qemu/100", map[string]any{"node": "pve2", "vmid": "999"})
+	if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" || opErr.Message != "vmid comes from the ID." {
+		t.Fatalf("vmid in input: %+v", opErr)
+	}
 	for _, input := range []map[string]any{{"cores": 2}, {"node": "pve2", "digest": "d"}, {"node": "pve2", "tags": nil}} {
 		_, err := mutate(vms, client, "create", "qemu/100", input)
 		if opErr := opError(t, vms, err); opErr.Code != "INVALID_INPUT" {
@@ -703,5 +707,33 @@ func TestSnapshotWrites(t *testing.T) {
 	_, err = act(snaps, client, "rollback", "qemu/100/pre")
 	if opErr := opError(t, snaps, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Snapshot.Rollback") {
 		t.Fatalf("rollback 403: %+v", opErr)
+	}
+}
+
+func TestCreatesStillRunningAfterBoundAreTimeouts(t *testing.T) {
+	f, client := newFakePVE(t)
+	f.taskStatus, f.exitStatus = "running", ""
+	defer func(d time.Duration) { taskWaitBound = d }(taskWaitBound)
+	taskWaitBound = 50 * time.Millisecond
+
+	_, err := mutate(vms, client, "create", "qemu/101", map[string]any{"node": "pve2"})
+	if opErr := opError(t, vms, err); opErr.Code != "TIMEOUT" || !strings.Contains(opErr.Message, "still running") {
+		t.Fatalf("guest create: %+v", opErr)
+	}
+	snaps := snapshotKind()
+	_, err = mutate(snaps, client, "create", "qemu/100/next", map[string]any{})
+	if opErr := opError(t, snaps, err); opErr.Code != "TIMEOUT" || !strings.Contains(opErr.Message, "still running") {
+		t.Fatalf("snapshot create: %+v", opErr)
+	}
+}
+
+func TestSnapshotOfMissingGuestNamesTheGuest(t *testing.T) {
+	_, client := newFakePVE(t)
+	snaps := snapshotKind()
+
+	_, err := mutate(snaps, client, "create", "qemu/999/pre", map[string]any{})
+	if opErr := opError(t, snaps, err); opErr.Code != "NOT_FOUND" || !strings.Contains(opErr.Message, "guest qemu/999 ") ||
+		!strings.Contains(opErr.Message, "qemu/999/pre") {
+		t.Fatalf("create: %+v", opErr)
 	}
 }

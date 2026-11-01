@@ -196,11 +196,25 @@ func (k *kind) snapshotGuest(ctx context.Context, client *proxmox.Client, id str
 	if !ok {
 		return proxmox.GuestRef{}, "", k.notFound(id)
 	}
-	g, err := client.FindGuest(ctx, guest)
+	g, err := k.findSnapshotGuest(ctx, client, guest, id)
 	if err != nil {
 		return proxmox.GuestRef{}, "", err
 	}
 	return g, name, nil
+}
+
+// findSnapshotGuest finds the guest of snapshot id; a missing guest is a
+// not-found naming both.
+func (k *kind) findSnapshotGuest(ctx context.Context, client *proxmox.Client, guest, id string) (proxmox.GuestRef, error) {
+	g, err := client.FindGuest(ctx, guest)
+	var notFoundErr *proxmox.GuestNotFoundError
+	if errors.As(err, &notFoundErr) {
+		return proxmox.GuestRef{}, &resourcev2.ResourceOperationError{
+			Err: err, Code: "NOT_FOUND", Title: "Not found",
+			Message: "No guest " + guest + " exists in this cluster for snapshot " + id + ".",
+		}
+	}
+	return g, err
 }
 
 // snapshotAction rolls the guest back to the snapshot.
@@ -274,7 +288,7 @@ func (k *kind) createSnapshot(ctx context.Context, client *proxmox.Client, reque
 	if vmstate && !strings.HasPrefix(guest, "qemu/") {
 		return resourcev2.Record{}, invalidParams("vmstate is only available for virtual machines.")
 	}
-	g, err := client.FindGuest(ctx, guest)
+	g, err := k.findSnapshotGuest(ctx, client, guest, id)
 	if err != nil {
 		return resourcev2.Record{}, err
 	}
@@ -283,8 +297,12 @@ func (k *kind) createSnapshot(ctx context.Context, client *proxmox.Client, reque
 	if err != nil {
 		return resourcev2.Record{}, &writeError{privilege: privSnapshot, what: what, err: err}
 	}
-	if _, err := waitTask(ctx, client, g.Node, upid); err != nil {
+	done, err := waitTask(ctx, client, g.Node, upid)
+	if err != nil {
 		return resourcev2.Record{}, &writeError{privilege: privSnapshot, what: what, err: err}
+	}
+	if !done {
+		return resourcev2.Record{}, stillRunning("Snapshot "+name+" of "+g.Label(), upid)
 	}
 	return k.get(ctx, client, resourcev2.GetRequest{Route: request.Route, Reference: request.Reference, Representation: representationID})
 }

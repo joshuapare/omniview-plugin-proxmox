@@ -142,10 +142,11 @@ func (c *Client) UpdateGuestConfig(ctx context.Context, g GuestRef, set map[stri
 // POST /nodes/{node}/{type}, the form holding its configuration, and
 // returns the task's UPID.
 func (c *Client) CreateGuest(ctx context.Context, node, guestType string, vmid int, form map[string]string) (string, error) {
-	values := url.Values{"vmid": {strconv.Itoa(vmid)}}
+	values := url.Values{}
 	for k, v := range form {
 		values.Set(k, v)
 	}
+	values.Set("vmid", strconv.Itoa(vmid))
 	var upid string
 	if err := c.post(ctx, "/nodes/"+url.PathEscape(node)+"/"+url.PathEscape(guestType), values, &upid); err != nil {
 		return "", err

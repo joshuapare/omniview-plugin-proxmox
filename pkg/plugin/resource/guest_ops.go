@@ -220,6 +220,9 @@ func (k *kind) create(ctx context.Context, client *proxmox.Client, request resou
 	if len(del) > 0 || digest != "" {
 		return resourcev2.Record{}, invalid("A new guest takes no digest and no empty or null values.")
 	}
+	if _, ok := set["vmid"]; ok {
+		return resourcev2.Record{}, invalid("vmid comes from the ID.")
+	}
 	node := set["node"]
 	if node == "" {
 		return resourcev2.Record{}, invalid("node is required: the node to create the guest on.")
@@ -230,8 +233,12 @@ func (k *kind) create(ctx context.Context, client *proxmox.Client, request resou
 	if err != nil {
 		return resourcev2.Record{}, &writeError{privilege: privAllocate, what: what, err: err}
 	}
-	if _, err := waitTask(ctx, client, node, upid); err != nil {
+	done, err := waitTask(ctx, client, node, upid)
+	if err != nil {
 		return resourcev2.Record{}, &writeError{privilege: privAllocate, what: what, err: err}
+	}
+	if !done {
+		return resourcev2.Record{}, stillRunning("Creation of "+k.noun+" "+id, upid)
 	}
 	return k.get(ctx, client, resourcev2.GetRequest{
 		Route: request.Route, Reference: request.Reference, Representation: representationID,
@@ -349,6 +356,15 @@ func waitTask(ctx context.Context, client *proxmox.Client, node, upid string) (d
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// stillRunning is a write whose task outlived taskWaitBound: started, but
+// its result cannot be read yet.
+func stillRunning(what, upid string) error {
+	return &resourcev2.ResourceOperationError{
+		Code: "TIMEOUT", Title: "Task still running",
+		Message: what + " is still running (task " + upid + "). Read the object again once the task has finished.",
+	}
 }
 
 // writeError is a failed guest write: what it tried and the privilege it
