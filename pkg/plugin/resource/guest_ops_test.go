@@ -174,6 +174,9 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 			if a.Scope != resourcev2.ActionScopeInstance {
 				t.Errorf("%s %s: scope %q", k.typ, a.ID, a.Scope)
 			}
+			if a.ParamsSchema == nil {
+				t.Errorf("%s %s: no params schema", k.typ, a.ID)
+			}
 			if a.Dangerous != slices.Contains(exp.dangerous, a.ID) {
 				t.Errorf("%s %s: dangerous %v", k.typ, a.ID, a.Dangerous)
 			}
@@ -345,5 +348,55 @@ func TestWriteErrorsAreClassified(t *testing.T) {
 	// A read 403 keeps the read message.
 	if opErr := opError(t, vms, &proxmox.APIError{StatusCode: http.StatusForbidden}); !strings.Contains(opErr.Message, "read") {
 		t.Fatalf("read 403: %+v", opErr)
+	}
+}
+
+func TestActionParamHelpers(t *testing.T) {
+	in, err := resourcev2.ValueFromNative(map[string]any{
+		"s": "x", "b": true, "i": int64(7), "u": uint64(8), "f": 9.0, "frac": 1.5, "l": []any{"a", "b"}, "bad": []any{1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := actionParams(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, err := stringParam(params, "s", true); err != nil || s != "x" {
+		t.Fatalf("string: %q %v", s, err)
+	}
+	if _, err := stringParam(params, "missing", true); err == nil {
+		t.Fatal("missing required string accepted")
+	}
+	if _, err := stringParam(params, "b", false); err == nil {
+		t.Fatal("boolean accepted as string")
+	}
+	if b, err := boolParam(params, "b"); err != nil || !b {
+		t.Fatalf("bool: %v %v", b, err)
+	}
+	for key, want := range map[string]int64{"i": 7, "u": 8, "f": 9} {
+		if n, ok, err := intParam(params, key); err != nil || !ok || n != want {
+			t.Fatalf("int %s: %d %v %v", key, n, ok, err)
+		}
+	}
+	if _, _, err := intParam(params, "frac"); err == nil {
+		t.Fatal("fraction accepted as integer")
+	}
+	if _, ok, err := intParam(params, "missing"); ok || err != nil {
+		t.Fatal("absent integer reported present")
+	}
+	if l, err := stringListParam(params, "l"); err != nil || strings.Join(l, ",") != "a,b" {
+		t.Fatalf("list: %v %v", l, err)
+	}
+	if _, err := stringListParam(params, "bad"); err == nil {
+		t.Fatal("non-string list accepted")
+	}
+
+	if p, err := actionParams(resourcev2.Value{}); err != nil || len(p) != 0 {
+		t.Fatalf("absent input: %v %v", p, err)
+	}
+	str, _ := resourcev2.ValueFromNative("x")
+	if _, err := actionParams(str); err == nil {
+		t.Fatal("non-object input accepted")
 	}
 }
