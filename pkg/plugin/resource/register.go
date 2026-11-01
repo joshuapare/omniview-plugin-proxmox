@@ -30,6 +30,7 @@ const (
 	typeCephMDS         = "proxmox::v1::CephMetadataServer"
 	typeCephFilesystem  = "proxmox::v1::CephFilesystem"
 	typeTask            = "proxmox::v1::Task"
+	typeSnapshot        = "proxmox::v1::Snapshot"
 	representationID    = "native"
 	representationRev   = "1"
 	catalogRevisionBase = "2"
@@ -44,6 +45,7 @@ var (
 		guestKind(typeVM, "Virtual Machines", "virtual machine", "qemu"),
 		guestKind(typeContainer, "Containers", "container", "lxc"),
 		taskKind(),
+		snapshotKind(),
 	}
 	cephKinds = []*kind{
 		cephKind(typeCephCluster, "Ceph Status", "Ceph cluster", (*proxmox.Client).CephStatus),

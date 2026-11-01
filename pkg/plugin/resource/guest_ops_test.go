@@ -62,6 +62,8 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			`{"id":"lxc/200","type":"lxc","vmid":200,"node":"pve1","name":"ct","status":"stopped"}]}`))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/config"):
 		_, _ = w.Write([]byte(`{"data":{"cores":2,"scsi0":"local-lvm:vm-100-disk-0,size=8G","digest":"d1"}}`))
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/snapshot"):
+		_, _ = w.Write([]byte(`{"data":[{"name":"pre","description":"before","snaptime":1700000000},{"name":"current","running":1}]}`))
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/agent/exec-status"):
 		f.execReads++
 		_, _ = w.Write([]byte(`{"data":` + f.execStatus[min(f.execReads, len(f.execStatus))-1] + `}`))
@@ -114,7 +116,7 @@ func actWith(k *kind, client *proxmox.Client, action, id string, params map[stri
 			return nil, err
 		}
 	}
-	v, err := k.action(ctx, client, resourcev2.ActionRequest{
+	v, err := k.writes.action(ctx, client, resourcev2.ActionRequest{
 		Route: resourcev2.AccessRoute{Connection: "c"}, Reference: ref(k.typ, id), Action: action, Input: input,
 	})
 	if err != nil {
@@ -132,7 +134,7 @@ func mutate(k *kind, client *proxmox.Client, op, id string, input map[string]any
 	if err != nil {
 		return resourcev2.Record{}, err
 	}
-	return k.mutate(ctx, client, resourcev2.MutationRequest{
+	return k.writes.mutate(ctx, client, resourcev2.MutationRequest{
 		Route: resourcev2.AccessRoute{Connection: "c"}, Reference: ref(k.typ, id), Operation: op, Input: in,
 	})
 }
@@ -157,6 +159,10 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 		typeContainer: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop"},
 			actions: "start,shutdown,reboot,stop,migrate,clone,config",
+		},
+		typeSnapshot: {
+			writes:    []resourcev2.Operation{resourcev2.OperationAction, resourcev2.OperationCreate, resourcev2.OperationDelete},
+			dangerous: []string{"rollback"}, actions: "rollback",
 		},
 	}
 	allWrites := []resourcev2.Operation{
@@ -569,5 +575,133 @@ func TestGuestExecPollsUntilExited(t *testing.T) {
 	_, err = actWith(cts, client, "guest-exec", "lxc/200", map[string]any{"command": []any{"ls"}})
 	if opErr := opError(t, cts, err); opErr.Code != "UNSUPPORTED" {
 		t.Fatalf("container guest-exec: %+v", opErr)
+	}
+}
+
+func TestSnapshotIDsParse(t *testing.T) {
+	for id, want := range map[string][2]string{
+		"qemu/100/pre":  {"qemu/100", "pre"},
+		"lxc/200/a_b-c": {"lxc/200", "a_b-c"},
+		"qemu/100":      {},
+		"qemu/100/":     {},
+		"node/pve1/x":   {},
+		"qemu//x":       {},
+		"qemu/1/2/x":    {},
+	} {
+		guest, name, ok := splitSnapshotID(id)
+		if ok != (want[0] != "") || guest != want[0] || name != want[1] {
+			t.Errorf("%s: %q %q %v", id, guest, name, ok)
+		}
+	}
+}
+
+func TestSnapshotsListWithoutCurrentAndGetByID(t *testing.T) {
+	_, client := newFakePVE(t)
+	snaps := snapshotKind()
+
+	entries, err := snaps.list(ctx, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, e := range entries {
+		ids = append(ids, e.ID)
+	}
+	slices.Sort(ids)
+	if strings.Join(ids, ",") != "lxc/200/pre,qemu/100/pre" {
+		t.Fatalf("listed %v", ids)
+	}
+
+	rec, err := snaps.get(ctx, client, resourcev2.GetRequest{Reference: ref(typeSnapshot, "qemu/100/pre"), Representation: representationID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := rec.Body.Map[refsField].Map
+	if rec.Body.Map["description"].String != "before" || refs["vm"].String != "qemu/100" || refs["node"].String != "node/pve2" {
+		t.Fatalf("unexpected record %+v", rec.Body.Map)
+	}
+	if _, ok := refs["container"]; ok {
+		t.Fatal("VM snapshot has a container ref")
+	}
+	for _, id := range []string{"qemu/100/current", "qemu/100/missing", "qemu/999/pre", "pre"} {
+		_, err := snaps.get(ctx, client, resourcev2.GetRequest{Reference: ref(typeSnapshot, id), Representation: representationID})
+		if opErr := opError(t, snaps, err); opErr.Code != "NOT_FOUND" {
+			t.Fatalf("%s: %+v", id, opErr)
+		}
+	}
+}
+
+func TestSnapshotListSkipsTemplatesAndUnknownGuests(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"qemu/100","type":"qemu","node":"pve1","template":1},` +
+				`{"id":"qemu/101","type":"qemu","node":"pve2","status":"unknown"},{"id":"lxc/200","type":"lxc","node":"pve1"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"name":"current"}]}`))
+	}))
+	defer srv.Close()
+	client, err := proxmox.NewClient(proxmox.Cluster{ID: "c", URL: srv.URL, TokenID: "root@pam!t", TokenSecret: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := snapshotKind().list(ctx, client)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("list %+v %v", entries, err)
+	}
+	if strings.Join(paths, ",") != "/api2/json/cluster/resources,/api2/json/nodes/pve1/lxc/200/snapshot" {
+		t.Fatalf("read %v", paths)
+	}
+}
+
+func TestSnapshotWrites(t *testing.T) {
+	f, client := newFakePVE(t)
+	snaps := snapshotKind()
+
+	for _, id := range []string{"qemu/100/1bad", "qemu/100/a", "qemu/100/has.dot", "qemu/100"} {
+		_, err := mutate(snaps, client, "create", id, map[string]any{})
+		if opErr := opError(t, snaps, err); opErr.Code != "INVALID_INPUT" {
+			t.Fatalf("%s: %+v", id, opErr)
+		}
+	}
+	_, err := mutate(snaps, client, "create", "lxc/200/pre", map[string]any{"vmstate": true})
+	if opErr := opError(t, snaps, err); opErr.Code != "INVALID_INPUT" {
+		t.Fatalf("container vmstate: %+v", opErr)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("invalid creates wrote %+v", f.writes)
+	}
+
+	rec, err := mutate(snaps, client, "create", "qemu/100/pre", map[string]any{"description": "before", "vmstate": true})
+	if err != nil || rec.Reference.Address.ID != "qemu/100/pre" {
+		t.Fatalf("create: %+v %v", rec, err)
+	}
+	want := url.Values{"snapname": {"pre"}, "description": {"before"}, "vmstate": {"1"}}
+	if w := f.writes[0]; w.method != http.MethodPost || w.path != "/nodes/pve2/qemu/100/snapshot" || w.form.Encode() != want.Encode() {
+		t.Fatalf("create %s %s %v", w.method, w.path, w.form)
+	}
+
+	rec, err = mutate(snaps, client, "delete", "qemu/100/pre", map[string]any{})
+	if err != nil || rec.Body.Map["name"].String != "pre" {
+		t.Fatalf("delete: %+v %v", rec, err)
+	}
+	if w := f.writes[1]; w.method != http.MethodDelete || w.path != "/nodes/pve2/qemu/100/snapshot/pre" {
+		t.Fatalf("delete %s %s", w.method, w.path)
+	}
+
+	res, err := act(snaps, client, "rollback", "qemu/100/pre")
+	if err != nil || res["upid"] != "UPID:pve2:00001:task" {
+		t.Fatalf("rollback: %+v %v", res, err)
+	}
+	if w := f.writes[2]; w.method != http.MethodPost || w.path != "/nodes/pve2/qemu/100/snapshot/pre/rollback" {
+		t.Fatalf("rollback %s %s", w.method, w.path)
+	}
+
+	f.writeCode, f.writeBody = http.StatusForbidden, `{"data":null}`
+	_, err = act(snaps, client, "rollback", "qemu/100/pre")
+	if opErr := opError(t, snaps, err); opErr.Code != "FORBIDDEN" || !strings.Contains(opErr.Message, "VM.Snapshot.Rollback") {
+		t.Fatalf("rollback 403: %+v", opErr)
 	}
 }
