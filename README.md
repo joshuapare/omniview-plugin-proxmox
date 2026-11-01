@@ -208,7 +208,8 @@ In the UI:
 
 Guest actions are in the resource drawer's header and in each table row's **…** menu (also on
 right-click). Each needs a privilege beyond `PVEAuditor`; without it the action fails with
-**Forbidden** naming the privilege. `PVEVMAdmin` on `/vms` covers every guest operation.
+**Forbidden** naming the privilege. `PVEVMAdmin` on `/vms` covers guest operations except
+guest-agent commands on PVE 8, which require `VM.Monitor`.
 
 | Operation | Kinds | API | Privilege |
 | --- | --- | --- | --- |
