@@ -26,6 +26,8 @@ func main() {
 					Multiple:    true,
 					DefaultPath: "~/.config/omniview-proxmox",
 				},
+				// Connections are loaded from these files when the plugin starts.
+				RequiresRestart: true,
 			},
 		},
 	})

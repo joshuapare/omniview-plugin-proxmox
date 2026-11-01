@@ -99,14 +99,15 @@ jobs:
 
       - name: Publish to marketplace
         if: ${{ !inputs.dry-run }}
-        uses: omniviewdev/publish-plugin-action@v1
+        # v1.1.0: the floating v1 tag predates min-ide-version and ignores it.
+        uses: omniviewdev/publish-plugin-action@da971a73161a4ddd5fcd80bd2b0cb7438ba78530 # v1.1.0
         with:
           api-key: ${{ secrets.OMNIVIEW_API_KEY }}
           api-url: ${{ vars.OMNIVIEW_API_URL }}
           publisher-slug: mononen
           plugin-id: proxmox
           version: ${{ steps.version.outputs.value }}
-          min-ide-version: "0.11.0"
+          min-ide-version: "0.14.0"
           artifact-path: dist/
           architectures: ${{ steps.version.outputs.platforms }}
 
