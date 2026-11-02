@@ -25,8 +25,10 @@ const (
 	keyCephMon    = "proxmox::v1::CephMonitor"
 	keyCephMgr    = "proxmox::v1::CephManager"
 	keyCephMDS    = "proxmox::v1::CephMetadataServer"
+	keyTask       = "proxmox::v1::Task"
 	labelNode     = "node"
 	labelUnit     = "unit"
+	labelUPID     = "upid"
 	wholeJournal  = "syslog"
 	sourceIDSep   = ":"
 	osdNamePrefix = "osd."
@@ -42,7 +44,7 @@ var cephUnits = map[string]string{
 
 // Register adds the log capability to the plugin.
 func Register(plugin *sdk.Plugin) {
-	handlers := make(map[string]sdklogs.Handler, len(cephUnits)+1)
+	handlers := make(map[string]sdklogs.Handler, len(cephUnits)+2)
 	for _, key := range []string{keyNode, keyCephOSD, keyCephMon, keyCephMgr, keyCephMDS} {
 		handlers[key] = sdklogs.Handler{
 			Plugin:        pluginID,
@@ -50,6 +52,12 @@ func Register(plugin *sdk.Plugin) {
 			Handler:       handler,
 			SourceBuilder: sourcesFor(key),
 		}
+	}
+	handlers[keyTask] = sdklogs.Handler{
+		Plugin:        pluginID,
+		Resource:      keyTask,
+		Handler:       taskHandler,
+		SourceBuilder: taskSources,
 	}
 	if err := sdklogs.RegisterPlugin(plugin, sdklogs.PluginOpts{Handlers: handlers}); err != nil {
 		panic(fmt.Sprintf("register proxmox log capability: %v", err))

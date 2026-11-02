@@ -16,9 +16,10 @@ import (
 // lister returns every native entry of one kind.
 type lister func(context.Context, *proxmox.Client) ([]proxmox.Entry, error)
 
-// kind serves one read-only resource type from a lister. Proxmox has no
-// cheaper per-object read for most kinds, so Get, Enumerate and Watch are all
-// built on the full list. Bodies are the native entries, plus a refsField
+// kind serves one resource type from a lister. Proxmox has no cheaper
+// per-object read for most kinds, so Get, Enumerate and Watch are built on
+// the full list unless the kind has a getter. Kinds with writes add actions
+// and mutations. Bodies are the native entries, plus a refsField
 // object on guests and storage, identified by the lister's ID: Proxmox's own
 // cluster-unique `id` for /cluster/resources kinds (qemu/100, node/pve1,
 // storage/pve1/local), the Ceph name otherwise. Types have no identity or
@@ -33,9 +34,20 @@ type kind struct {
 	policy resourcev2.SyncPolicy
 	// relationships are the edges the host graph extracts from the bodies.
 	relationships []resourcev2.RelationshipDescriptor
-	// guestType is qemu or lxc for guest kinds, which add actions, config
-	// updates and deletion; empty otherwise.
+	// guestType is qemu or lxc for guest kinds; empty otherwise.
 	guestType string
+	// getter reads one object by ID; nil scans the list.
+	getter func(context.Context, *proxmox.Client, string) (proxmox.Entry, error)
+	// writes adds actions and mutations; nil kinds are read-only.
+	writes *kindWrites
+}
+
+// kindWrites are the write operations of a kind and their callbacks.
+type kindWrites struct {
+	operations  []resourcev2.Operation
+	descriptors func() []resourcev2.ActionDescriptor
+	action      func(context.Context, *proxmox.Client, resourcev2.ActionRequest) (resourcev2.Value, error)
+	mutate      func(context.Context, *proxmox.Client, resourcev2.MutationRequest) (resourcev2.Record, error)
 }
 
 var _ resourcev2.ErrorClassifier = (*kind)(nil)
@@ -72,6 +84,15 @@ func clusterKind(typ, label, noun string, apiType proxmox.ResourceType, entryTyp
 func guestKind(typ, label, noun, guestType string) *kind {
 	k := clusterKind(typ, label, noun, proxmox.ResourceTypeVM, guestType)
 	k.guestType = guestType
+	k.writes = &kindWrites{
+		operations: []resourcev2.Operation{
+			resourcev2.OperationAction, resourcev2.OperationCreate,
+			resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
+		},
+		descriptors: k.actionDescriptors,
+		action:      k.action,
+		mutate:      k.mutate,
+	}
 	return k
 }
 
@@ -94,23 +115,24 @@ func cephKind(
 }
 
 // resourceType declares the kind: one native representation, point reads,
-// enumeration and best-effort updates; guests add actions, config updates
-// and deletion.
+// enumeration, the kind's writes and, unless it is never synced,
+// best-effort updates.
 func (k *kind) resourceType() resourcev2.ResourceType {
 	operations := []resourcev2.Operation{resourcev2.OperationGet, resourcev2.OperationEnumerate}
-	if k.guestType != "" {
-		operations = append(operations,
-			resourcev2.OperationAction, resourcev2.OperationMutationUpdate, resourcev2.OperationDelete)
+	if k.writes != nil {
+		operations = append(operations, k.writes.operations...)
 	}
 	capabilities := make([]resourcev2.Capability, 0, len(operations)+1)
 	for _, op := range operations {
 		capabilities = append(capabilities, resourcev2.Capability{Operation: op, Scope: resourcev2.QueryScope{}})
 	}
-	capabilities = append(capabilities, resourcev2.Capability{
-		Operation: resourcev2.OperationUpdate,
-		Scope:     resourcev2.QueryScope{},
-		Guarantee: resourcev2.BestEffortGuarantee,
-	})
+	if k.policy != resourcev2.SyncNever {
+		capabilities = append(capabilities, resourcev2.Capability{
+			Operation: resourcev2.OperationUpdate,
+			Scope:     resourcev2.QueryScope{},
+			Guarantee: resourcev2.BestEffortGuarantee,
+		})
+	}
 	return resourcev2.ResourceType{
 		Type:                  k.typ,
 		DisplayName:           k.label,
@@ -128,24 +150,39 @@ func (k *kind) registration() resourcev2.Registration[proxmox.Client] {
 		Type:            k.typ,
 		Get:             k.get,
 		Enumerate:       k.enumerate,
-		Watch:           k.watch,
 		SyncPolicy:      k.policy,
 		ErrorClassifier: k,
 	}
-	if k.guestType != "" {
-		r.Action = k.action
-		r.Actions = k.actionDescriptors()
-		r.Mutate = k.mutate
+	if k.policy != resourcev2.SyncNever {
+		r.Watch = k.watch
+	}
+	if k.writes != nil {
+		r.Mutate = k.writes.mutate
+		if k.writes.descriptors != nil {
+			r.Action = k.writes.action
+			r.Actions = k.writes.descriptors()
+		}
 	}
 	return r
 }
 
 func (k *kind) get(ctx context.Context, client *proxmox.Client, request resourcev2.GetRequest) (resourcev2.Record, error) {
+	id := request.Reference.Address.ID
+	if k.getter != nil {
+		e, err := k.getter(ctx, client, id)
+		var notFoundErr *proxmox.GuestNotFoundError
+		switch {
+		case errors.As(err, &notFoundErr), err == nil && e.ID != id:
+			return resourcev2.Record{}, k.notFound(id)
+		case err != nil:
+			return resourcev2.Record{}, err
+		}
+		return record(request.Reference, e)
+	}
 	entries, err := k.list(ctx, client)
 	if err != nil {
 		return resourcev2.Record{}, err
 	}
-	id := request.Reference.Address.ID
 	for _, e := range entries {
 		if e.ID == id {
 			return record(request.Reference, e)

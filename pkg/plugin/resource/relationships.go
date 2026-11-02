@@ -21,6 +21,9 @@ const refsField = "omniview"
 type refs struct {
 	// Node is the ID of the node a guest runs on or a storage entry belongs to.
 	Node string `json:"node,omitempty"`
+	// VM and Container are the ID of the guest a snapshot belongs to.
+	VM        string `json:"vm,omitempty"`
+	Container string `json:"container,omitempty"`
 	// Storage holds the IDs of the storage entries on the guest's node with
 	// the guest's volumes (disks, EFI/TPM state, CD-ROM images, unused
 	// disks): empty when it has none, absent when its config could not be
@@ -47,6 +50,10 @@ var (
 	relGuestNode    = relationship(resourcev2.RelRunsOn, typeNode, "runs on", "runs", "many-to-one", "node")
 	relGuestStorage = relationship(resourcev2.RelUses, typeStorage, "uses storage", "used by", "many-to-many", "storage")
 	relStorageNode  = relationship(resourcev2.RelRunsOn, typeNode, "attached to", "has storage", "many-to-one", "node")
+	relTaskNode     = relationship(resourcev2.RelRunsOn, typeNode, "ran on", "ran", "many-to-one", "node")
+
+	relSnapshotVM        = relationship(resourcev2.RelMemberOf, typeVM, "snapshot of", "has snapshot", "many-to-one", "vm")
+	relSnapshotContainer = relationship(resourcev2.RelMemberOf, typeContainer, "snapshot of", "has snapshot", "many-to-one", "container")
 )
 
 // relationshipsOf returns the edges the host indexes from refsField for one

@@ -67,12 +67,12 @@ func (j *journal) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.
 		}
 		// Reconnecting cannot fix a missing privilege, and an error returned
 		// here never reaches the user, so say it in the log itself.
-		return j.pipe(ctx, req.Follow, func(w *lineWriter) {
+		return pipe(ctx, req.Follow, func(w *lineWriter) {
 			w.message(j.now(), j.describe(err))
 		}), nil
 	}
 
-	return j.pipe(ctx, req.Follow, func(w *lineWriter) {
+	return pipe(ctx, req.Follow, func(w *lineWriter) {
 		cur := &cursor{}
 		if len(backlog) == 0 && j.unit != "" && req.SinceTime == nil && req.SinceSeconds <= 0 {
 			// A daemon with no journal at all is a finding in itself (a down
@@ -297,7 +297,7 @@ func (lw *lineWriter) message(now time.Time, msg string) {
 // pipe runs produce in the background feeding the returned reader. In
 // follow mode the reader stays open after produce returns until ctx ends or
 // the reader is closed; otherwise it ends there.
-func (j *journal) pipe(ctx context.Context, follow bool, produce func(*lineWriter)) io.ReadCloser {
+func pipe(ctx context.Context, follow bool, produce func(*lineWriter)) io.ReadCloser {
 	ctx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
 	go func() {

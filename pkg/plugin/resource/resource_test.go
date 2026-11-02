@@ -248,3 +248,48 @@ func TestEnumeratePagesThroughController(t *testing.T) {
 		t.Fatalf("get qemu/101: %+v, %v", rec, err)
 	}
 }
+
+// A task Get reads the task's status on its node, so tasks too old for the
+// cluster list are found too.
+func TestTaskGetFallsBackToStatus(t *testing.T) {
+	const upid = "UPID:pve1:0001:0002:0003:vzdump::root@pam:"
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api2/json/nodes/pve1/tasks/" + upid + "/status":
+			_, _ = w.Write([]byte(`{"data":{"upid":"` + upid + `","node":"pve1","status":"stopped","exitstatus":"OK"}}`))
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"data":null}`))
+		}
+	}))
+	defer srv.Close()
+	client, err := proxmox.NewClient(proxmox.Cluster{ID: "c", URL: srv.URL, TokenID: "root@pam!t", TokenSecret: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := taskKind()
+	get := func(id string) (resourcev2.Record, error) {
+		return tasks.get(ctx, client, resourcev2.GetRequest{Reference: ref(typeTask, id), Representation: representationID})
+	}
+
+	rec, err := get(upid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs := rec.Body.Map[refsField]
+	if rec.Body.Map["exitstatus"].String != "OK" || refs.Map["node"].String != "node/pve1" {
+		t.Fatalf("unexpected record %+v", rec.Body.Map)
+	}
+	if strings.Join(paths, ",") != "/api2/json/nodes/pve1/tasks/"+upid+"/status" {
+		t.Fatalf("read %v", paths)
+	}
+
+	for _, id := range []string{"UPID:pve1:9999:x:y:z::root@pam:", "not-a-upid", "UPID:"} {
+		var opErr *resourcev2.ResourceOperationError
+		if _, err := get(id); !errors.As(err, &opErr) || opErr.Code != "NOT_FOUND" {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+}

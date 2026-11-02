@@ -217,11 +217,11 @@ func (c *Client) onlineNodes(ctx context.Context) ([]string, error) {
 func stringField(raw json.RawMessage, field string) (string, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return "", fmt.Errorf("decode ceph object: %w", err)
+		return "", fmt.Errorf("decode object: %w", err)
 	}
 	var s string
 	if err := json.Unmarshal(obj[field], &s); err != nil || s == "" {
-		return "", fmt.Errorf("ceph object has no string %q field", field)
+		return "", fmt.Errorf("object has no string %q field", field)
 	}
 	return s, nil
 }
