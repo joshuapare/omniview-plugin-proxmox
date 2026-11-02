@@ -16,6 +16,7 @@ import { jsonToValue, parseAppError, valueToJSON } from '@omniviewdev/runtime';
 import { ResourceClient } from '@omniviewdev/runtime/api';
 import { LuChevronDown, LuSettings2 } from 'react-icons/lu';
 
+import { VM_CONFIG_CHANGED } from '../components/VMPendingConfig';
 import { PLUGIN_ID } from '../constants';
 import type { ActionTarget, MutateResource } from './actionDeps';
 import {
@@ -103,6 +104,9 @@ export default function EditConfigDialog({ target, mutate, onClose }: Props) {
       const input: Record<string, unknown> = { ...changes };
       if (loaded.digest) input.digest = loaded.digest;
       await mutate({ route, reference: record.reference, operation: 'update', input: jsonToValue(input) });
+      window.dispatchEvent(new CustomEvent(VM_CONFIG_CHANGED, {
+        detail: { connection: route.connection, id: record.reference.address.id },
+      }));
       onClose();
     } catch (error) {
       // The runtime already showed the error notification; keep the details next to the fields.
@@ -240,7 +244,7 @@ function ConfigInput({ field, value, error, disabled, onChange }: InputProps) {
           </Select.Icon>
         </Select.Trigger>
         <Select.Portal>
-          <Select.Positioner sideOffset={4}>
+          <Select.Positioner sideOffset={4} style={{ zIndex: 'calc(var(--ov-z-modal, 9000) + 1)' }}>
             <Select.Popup>
               <Select.List>
                 {options.map((opt) => (

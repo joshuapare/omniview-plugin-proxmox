@@ -10,6 +10,7 @@ import NodeGuests from '../components/NodeGuests';
 import RelatedResources from '../components/RelatedResources';
 import ResourceMetrics from '../components/ResourceMetrics';
 import ResourceOverview from '../components/ResourceOverview';
+import VMPendingConfig from '../components/VMPendingConfig';
 import { GRAPH_RESOURCE_KEYS, METRIC_RESOURCE_KEYS, PLUGIN_ID, RESOURCE_KEYS } from '../constants';
 import { type NativeObject, displayName, kindFor } from '../utils/columns';
 import { type ProxmoxEntry, drawerContextOf } from './useProxmoxResources';
@@ -35,7 +36,12 @@ export function useOpenResource() {
             resourceKey === RESOURCE_KEYS.cephCluster ? (
               <CephStatusOverview data={ctx.data} />
             ) : (
-              <ResourceOverview data={ctx.data} columns={kind.columns} />
+              <>
+                <ResourceOverview data={ctx.data} columns={kind.columns} />
+                {resourceKey === RESOURCE_KEYS.virtualMachine && (
+                  <VMPendingConfig record={ctx.resource?.record ?? entry.record} />
+                )}
+              </>
             ),
         },
       ];

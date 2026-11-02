@@ -77,6 +77,12 @@ var configAction = resourcev2.ActionDescriptor{
 	Description: "Read the guest's configuration and its digest.",
 }
 
+var pendingAction = resourcev2.ActionDescriptor{
+	ID: "pending", Label: "Pending configuration", Icon: "LuFileText", ParamsSchema: &resourcev2.Schema{},
+	Description: "Read the VM's current and pending configuration.",
+	Scope: resourcev2.ActionScopeInstance,
+}
+
 // actions lists the lifecycle actions of this guest kind.
 func (k *kind) actions() []guestAction {
 	out := make([]guestAction, 0, len(guestActions))
@@ -100,7 +106,7 @@ func (k *kind) actionDescriptors() []resourcev2.ActionDescriptor {
 	}
 	out = append(out, k.migrateAction(), cloneAction)
 	if k.guestType == "qemu" {
-		out = append(out, guestExecAction)
+		out = append(out, guestExecAction, pendingAction)
 	}
 	out = append(out, configAction)
 	for i := range out {
@@ -127,6 +133,17 @@ func (k *kind) action(ctx context.Context, client *proxmox.Client, request resou
 		if k.guestType == "qemu" {
 			return k.guestExec(ctx, client, id, request.Input)
 		}
+	}
+	if request.Action == "pending" && k.guestType == "qemu" {
+		g, err := k.find(ctx, client, id)
+		if err != nil {
+			return resourcev2.Value{}, err
+		}
+		entries, err := client.VMPending(ctx, g)
+		if err != nil {
+			return resourcev2.Value{}, &writeError{privilege: privAudit, what: "read pending configuration of " + k.noun + " " + id, err: err}
+		}
+		return resourcev2.ValueFromNative(map[string]any{"entries": entries})
 	}
 	for _, a := range k.actions() {
 		if a.descriptor.ID == request.Action {
