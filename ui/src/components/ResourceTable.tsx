@@ -55,11 +55,10 @@ type Props = {
  */
 export default function ResourceTable({ connectionId, resourceKey, label }: Props) {
   const [filter, setFilter] = useState('');
-  // Cursors of the pages before the shown one; the last one is the shown page's.
-  const [cursors, setCursors] = useState<string[]>([]);
+  const [pageIndex, setPageIndex] = useState(0);
   const kind = kindFor(resourceKey);
 
-  const resources = useProxmoxResources(connectionId, resourceKey, { cursor: cursors.at(-1) });
+  const resources = useProxmoxResources(connectionId, resourceKey);
   const rows = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     if (!needle) return resources.entries;
@@ -70,9 +69,12 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
     );
   }, [resources.entries, filter, kind]);
 
-  const paged = cursors.length > 0 || resources.nextCursor !== undefined;
-  const first = cursors.length * PAGE_SIZE;
-  const pageLabel = `${first + 1}–${first + resources.entries.length}${resources.total === undefined ? '' : ` of ${resources.total}`}`;
+  const total = rows.length;
+  const currentPage = Math.min(pageIndex, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1));
+  const first = currentPage * PAGE_SIZE;
+  const pageRows = rows.slice(first, first + PAGE_SIZE);
+  const paged = total > PAGE_SIZE;
+  const pageLabel = `${first + 1}–${first + pageRows.length} of ${total}`;
 
   let body;
   if (resources.error) {
@@ -98,7 +100,7 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
     );
   } else {
     // Kept mounted while filtering so the chosen sort survives an empty result.
-    body = <SortedTable resourceKey={resourceKey} kind={kind} rows={rows} />;
+    body = <SortedTable resourceKey={resourceKey} kind={kind} rows={pageRows} />;
   }
 
   return (
@@ -118,7 +120,7 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
             size="sm"
             placeholder={`Filter ${label.toLowerCase()}`}
             value={filter}
-            onValueChange={setFilter}
+            onValueChange={(value) => { setFilter(value); setPageIndex(0); }}
             clearable
           />
           {paged && (
@@ -128,8 +130,8 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
                 variant="ghost"
                 color="neutral"
                 aria-label="Previous page"
-                disabled={cursors.length === 0}
-                onClick={() => setCursors((prev) => prev.slice(0, -1))}
+                disabled={currentPage === 0}
+                onClick={() => setPageIndex(currentPage - 1)}
               >
                 <LuChevronLeft />
               </IconButton>
@@ -138,11 +140,8 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
                 variant="ghost"
                 color="neutral"
                 aria-label="Next page"
-                disabled={resources.nextCursor === undefined || !resources.isCurrent}
-                onClick={() => {
-                  const next = resources.nextCursor;
-                  if (next !== undefined) setCursors((prev) => [...prev, next]);
-                }}
+                disabled={first + PAGE_SIZE >= total}
+                onClick={() => setPageIndex(currentPage + 1)}
               >
                 <LuChevronRight />
               </IconButton>

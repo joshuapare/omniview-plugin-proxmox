@@ -5,7 +5,7 @@ import type { GraphNode } from '@omniviewdev/runtime/models';
 import { LuCircleAlert, LuNetwork } from 'react-icons/lu';
 import { useParams } from 'react-router';
 
-import { PAGE_SIZE, PLUGIN_ID, RESOURCE_KEYS } from '../constants';
+import { PLUGIN_ID, RESOURCE_KEYS } from '../constants';
 import { type ClusterObject, useClusterObjects } from '../hooks/useClusterObjects';
 import { useOpenResource } from '../hooks/useOpenResource';
 import { type ProxmoxObject, columnStatus, formatBytes } from '../utils/columns';
@@ -76,7 +76,7 @@ type Link = { from: Box; to: Box; path: string };
  */
 export default function TopologyPage() {
   const { connectionId = '' } = useParams<{ connectionId: string }>();
-  const { objects, truncated, isLoading, error } = useClusterObjects(connectionId);
+  const { objects, isLoading, error } = useClusterObjects(connectionId);
   const sortedNodes = useMemo(
     () =>
       [...objects.values()]
@@ -116,11 +116,6 @@ export default function TopologyPage() {
         <Text size="sm" tone="muted">
           Guests by node, linked to the storage holding their disks
         </Text>
-        {truncated.length > 0 && (
-          <Text size="sm" tone="warning">
-            {`Only the first ${PAGE_SIZE} ${truncated.join(', ')} are shown`}
-          </Text>
-        )}
       </Stack>
       {body}
     </Stack>
