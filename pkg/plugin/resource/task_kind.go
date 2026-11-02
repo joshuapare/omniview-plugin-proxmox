@@ -18,7 +18,7 @@ func taskKind() *kind {
 		typ:           typeTask,
 		label:         "Tasks",
 		noun:          "task",
-		policy:        resourcev2.SyncOnFirstQuery,
+		sourceEnabled: true,
 		relationships: []resourcev2.RelationshipDescriptor{relTaskNode},
 		list: func(ctx context.Context, client *proxmox.Client) ([]proxmox.Entry, error) {
 			tasks, err := client.ClusterTasks(ctx)
