@@ -183,6 +183,11 @@ func (s *shellSession) connect(ctx *types.PluginContext, opts sdkexec.SessionOpt
 	defer cancel()
 	term, err := client.OpenTerminal(setupCtx, target)
 	if err != nil {
+		if ctx.Context.Err() != nil {
+			// Cancelled while connecting: a cancel is not an open failure.
+			s.finish(nil)
+			return
+		}
 		s.finish(classifyOpenError(err, target, consoleAuth{ClusterID: client.ClusterID, ConsoleUser: client.ConsoleUser()}))
 		return
 	}

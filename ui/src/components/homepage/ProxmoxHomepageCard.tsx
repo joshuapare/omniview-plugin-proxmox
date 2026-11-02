@@ -12,7 +12,7 @@ import type { IconType } from 'react-icons';
 import { LuBox, LuMonitor, LuServer, LuUnplug } from 'react-icons/lu';
 import { SiProxmox } from 'react-icons/si';
 
-import { PAGE_SIZE, PLUGIN_ID, RESOURCE_KEYS, USAGE_ZONES, connectionPath, resourcePath } from '../../constants';
+import { PLUGIN_ID, RESOURCE_KEYS, USAGE_ZONES, connectionPath, resourcePath } from '../../constants';
 import { useProxmoxConnection } from '../../hooks/useProxmoxConnection';
 import { useProxmoxResources } from '../../hooks/useProxmoxResources';
 import { summarizeCluster, type Count } from '../../utils/clusterSummary';
@@ -173,11 +173,6 @@ function ConnectedClusterTile({ connection, hasErrors }: { connection: types.Con
           {hasErrors && (
             <Text size="xs" className={styles.Problem}>
               Last refresh failed; figures may be stale
-            </Text>
-          )}
-          {queries.some((q) => q.nextCursor !== undefined) && (
-            <Text size="xs" tone="muted">
-              {`Counts cover the first ${PAGE_SIZE} of each kind`}
             </Text>
           )}
           <div className={styles.Counts}>

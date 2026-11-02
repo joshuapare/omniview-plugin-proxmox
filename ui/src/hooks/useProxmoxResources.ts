@@ -8,7 +8,7 @@ import {
   valueToJSON,
 } from '@omniviewdev/runtime';
 
-import { PAGE_SIZE, PLUGIN_ID } from '../constants';
+import { PLUGIN_ID } from '../constants';
 import type { ProxmoxObject } from '../utils/columns';
 
 /** One listed object: its decoded body, the host's record of it, and its type. */
@@ -52,15 +52,13 @@ export function errorMessage(error: unknown): string {
 
 type Options = {
   enabled?: boolean;
-  /** Source cursor of the page to show; undefined for the first page. */
-  cursor?: string;
 };
 
 /**
- * One live page (up to PAGE_SIZE objects) of a resource type: the host
- * resolves the target, enumerates it and applies the plugin's poll updates.
+ * A live collection of a resource type: the host resolves the target,
+ * enumerates it and applies the plugin's poll updates.
  */
-export function useProxmoxResources(connectionId: string, resourceKey: string, { enabled = true, cursor }: Options = {}) {
+export function useProxmoxResources(connectionId: string, resourceKey: string, { enabled = true }: Options = {}) {
   const target = useResolvedResourceTarget({
     pluginID: PLUGIN_ID,
     route: { connection: connectionId },
@@ -71,24 +69,19 @@ export function useProxmoxResources(connectionId: string, resourceKey: string, {
     pluginID: PLUGIN_ID,
     request: target.data && {
       targetId: target.data.targetId,
-      request: { target: target.data.target, pageSize: PAGE_SIZE, cursor },
+      request: { target: target.data.target, pageSize: 256 },
     },
     enabled: enabled && !!target.data,
+    collection: true,
     live: true,
   });
-  const page = result.acquired?.page;
-  const entries = useMemo(() => (page?.records ?? []).map(entryOf), [page]);
-  const count = page?.view?.count ?? page?.sourcePage.count;
-  const error = target.error ?? result.resources.error ?? undefined;
+  const records = result.resources.data?.records;
+  const entries = useMemo(() => (records ?? []).map(entryOf), [records]);
+  const error = target.error ?? result.resources.error ?? (result.sourceError ? result.source?.error ?? 'Source failed' : undefined);
 
   return {
     entries,
-    /** Objects of every page, when the backend knows the total. */
-    total: count?.value === undefined ? undefined : Number(count.value),
-    nextCursor: page?.sourcePage.nextCursor,
-    /** The page shown is the one requested (not a previous one kept while loading). */
-    isCurrent: result.isAcquiredRequestCurrent,
-    isLoading: enabled && !result.acquired && !error,
+    isLoading: enabled && !result.resources.data && !error,
     error: error ? errorMessage(error) : undefined,
     refresh: () => void (result.acquired ? result.refreshAcquiredPage() : result.resources.refetch()),
   };

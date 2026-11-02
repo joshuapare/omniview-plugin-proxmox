@@ -185,8 +185,8 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 				t.Errorf("%s: declares %s = %v, want %v", k.typ, op, got, w)
 			}
 		}
-		if got := containsOp(declared, resourcev2.OperationUpdate); got != exp.watched || (r.Watch != nil) != exp.watched {
-			t.Errorf("%s: watched = %v/%v, want %v", k.typ, got, r.Watch != nil, exp.watched)
+		if got := containsOp(declared, resourcev2.OperationSourceUpdates); got != exp.watched || (r.Source != nil) != exp.watched {
+			t.Errorf("%s: source = %v/%v, want %v", k.typ, got, r.Source != nil, exp.watched)
 		}
 		if (r.Mutate != nil) != (len(exp.writes) > 0) {
 			t.Errorf("%s: mutate registered = %v", k.typ, r.Mutate != nil)

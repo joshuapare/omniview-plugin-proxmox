@@ -43,7 +43,6 @@ func snapshotKind() *kind {
 		typ:           typeSnapshot,
 		label:         "Snapshots",
 		noun:          "snapshot",
-		policy:        resourcev2.SyncNever,
 		relationships: []resourcev2.RelationshipDescriptor{relSnapshotVM, relSnapshotContainer},
 		list:          listSnapshots,
 	}

@@ -17,7 +17,7 @@ import (
 type lister func(context.Context, *proxmox.Client) ([]proxmox.Entry, error)
 
 // kind serves one resource type from a lister. Proxmox has no cheaper
-// per-object read for most kinds, so Get, Enumerate and Watch are built on
+// per-object read for most kinds, so Get, Enumerate and Source are built on
 // the full list unless the kind has a getter. Kinds with writes add actions
 // and mutations. Bodies are the native entries, plus a refsField
 // object on guests and storage, identified by the lister's ID: Proxmox's own
@@ -29,9 +29,10 @@ type kind struct {
 	// label is the plural display name: "Virtual Machines".
 	label string
 	// noun names one object in messages: "virtual machine", "Ceph pool".
-	noun   string
-	list   lister
-	policy resourcev2.SyncPolicy
+	noun             string
+	list             lister
+	acquireOnConnect bool
+	sourceEnabled    bool
 	// relationships are the edges the host graph extracts from the bodies.
 	relationships []resourcev2.RelationshipDescriptor
 	// guestType is qemu or lxc for guest kinds; empty otherwise.
@@ -56,11 +57,12 @@ var _ resourcev2.ErrorClassifier = (*kind)(nil)
 // from connect, with refsField added where the type declares relationships.
 func clusterKind(typ, label, noun string, apiType proxmox.ResourceType, entryType string) *kind {
 	return &kind{
-		typ:           typ,
-		label:         label,
-		noun:          noun,
-		policy:        resourcev2.SyncOnConnect,
-		relationships: relationshipsOf(entryType),
+		typ:              typ,
+		label:            label,
+		noun:             noun,
+		acquireOnConnect: true,
+		sourceEnabled:    true,
+		relationships:    relationshipsOf(entryType),
 		list: func(ctx context.Context, client *proxmox.Client) ([]proxmox.Entry, error) {
 			all, err := client.ClusterResources(ctx, apiType)
 			if err != nil {
@@ -104,19 +106,17 @@ func cephKind(
 	method func(*proxmox.Client, context.Context) ([]proxmox.Entry, error),
 ) *kind {
 	return &kind{
-		typ:    typ,
-		label:  label,
-		noun:   noun,
-		policy: resourcev2.SyncOnFirstQuery,
+		typ:           typ,
+		label:         label,
+		noun:          noun,
+		sourceEnabled: true,
 		list: func(ctx context.Context, client *proxmox.Client) ([]proxmox.Entry, error) {
 			return method(client, ctx)
 		},
 	}
 }
 
-// resourceType declares the kind: one native representation, point reads,
-// enumeration, the kind's writes and, unless it is never synced,
-// best-effort updates.
+// resourceType declares the kind's operations and best-effort source updates.
 func (k *kind) resourceType() resourcev2.ResourceType {
 	operations := []resourcev2.Operation{resourcev2.OperationGet, resourcev2.OperationEnumerate}
 	if k.writes != nil {
@@ -126,11 +126,11 @@ func (k *kind) resourceType() resourcev2.ResourceType {
 	for _, op := range operations {
 		capabilities = append(capabilities, resourcev2.Capability{Operation: op, Scope: resourcev2.QueryScope{}})
 	}
-	if k.policy != resourcev2.SyncNever {
+	if k.sourceEnabled {
 		capabilities = append(capabilities, resourcev2.Capability{
-			Operation: resourcev2.OperationUpdate,
+			Operation: resourcev2.OperationSourceUpdates,
 			Scope:     resourcev2.QueryScope{},
-			Guarantee: resourcev2.BestEffortGuarantee,
+			Guarantee: resourcev2.ContinuityBestEffort,
 		})
 	}
 	return resourcev2.ResourceType{
@@ -141,6 +141,7 @@ func (k *kind) resourceType() resourcev2.ResourceType {
 		Representations:       []resourcev2.Representation{nativeRepresentation()},
 		DefaultRepresentation: representationID,
 		Capabilities:          capabilities,
+		AcquireOnConnect:      k.acquireOnConnect,
 	}
 }
 
@@ -150,11 +151,10 @@ func (k *kind) registration() resourcev2.Registration[proxmox.Client] {
 		Type:            k.typ,
 		Get:             k.get,
 		Enumerate:       k.enumerate,
-		SyncPolicy:      k.policy,
 		ErrorClassifier: k,
 	}
-	if k.policy != resourcev2.SyncNever {
-		r.Watch = k.watch
+	if k.sourceEnabled {
+		r.Source = k.source
 	}
 	if k.writes != nil {
 		r.Mutate = k.writes.mutate

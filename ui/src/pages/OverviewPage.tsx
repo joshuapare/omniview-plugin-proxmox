@@ -18,7 +18,7 @@ import {
 } from 'react-icons/lu';
 import { Navigate, useParams } from 'react-router';
 
-import { CEPH_USAGE_ZONES, PAGE_SIZE, PLUGIN_ID, RESOURCE_KEYS, USAGE_ZONES, resourcePath } from '../constants';
+import { CEPH_USAGE_ZONES, PLUGIN_ID, RESOURCE_KEYS, USAGE_ZONES, resourcePath } from '../constants';
 import { type ClusterObject, useClusterObjects } from '../hooks/useClusterObjects';
 import { useOpenResource } from '../hooks/useOpenResource';
 import { useProxmoxConnection } from '../hooks/useProxmoxConnection';
@@ -109,7 +109,6 @@ function ConnectedOverview({ connectionId, name, stale }: ConnectedProps) {
       overview={overview}
       ceph={ceph}
       objects={cluster.objects}
-      truncated={cluster.truncated}
     />
   );
   return hasCeph ? <WithCeph connectionId={connectionId}>{render}</WithCeph> : render();
@@ -127,11 +126,9 @@ type BodyProps = ConnectedProps & {
   overview: ClusterOverview;
   ceph?: CephStatusSummary;
   objects: Map<string, ClusterObject>;
-  /** Kinds with more objects than one page; the figures count the first page only. */
-  truncated: string[];
 };
 
-function OverviewBody({ connectionId, name, stale, overview, ceph, objects, truncated }: BodyProps) {
+function OverviewBody({ connectionId, name, stale, overview, ceph, objects }: BodyProps) {
   const { navigate } = usePluginRouter();
   const open = useOpenResource();
   const openObject = (id: string) => {
@@ -143,9 +140,6 @@ function OverviewBody({ connectionId, name, stale, overview, ceph, objects, trun
 
   const issues: Issue[] = [
     ...(stale ? [{ severity: 'warning' as const, message: 'The last refresh failed; figures may be stale' }] : []),
-    ...truncated.map(
-      (kind): Issue => ({ severity: 'warning', message: `Figures count only the first ${PAGE_SIZE} ${kind}` }),
-    ),
     ...overview.issues,
     ...(ceph?.health.checks ?? [])
       .filter((check) => !check.muted)
