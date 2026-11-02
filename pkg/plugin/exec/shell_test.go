@@ -252,6 +252,29 @@ func TestShellCancelWhileConnecting(t *testing.T) {
 	}
 }
 
+// The watcher and a failed connect both finish the session. This forces the
+// order the watcher loses: the session is already cancelled when the
+// connect error arrives, and no watcher runs.
+func TestShellConnectErrorAfterCancelIsCleanStop(t *testing.T) {
+	f := &fakePVE{t: t}
+	clients := f.clients()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopCh := make(chan error, 1)
+	s := &shellSession{stopCh: stopCh, done: make(chan struct{})}
+	s.connect(&types.PluginContext{Context: ctx}, sdkexec.SessionOptions{
+		ResourceData: body(map[string]any{"id": "node/ares", "node": "ares"}),
+	}, clients, nodeTarget)
+	select {
+	case err := <-stopCh:
+		if err != nil {
+			t.Fatalf("stop error = %v, want nil after cancel", err)
+		}
+	default:
+		t.Fatal("connect did not finish the cancelled session")
+	}
+}
+
 func TestShellInvalidResourceReportedOnStopCh(t *testing.T) {
 	f := &fakePVE{t: t}
 	s := startSession(t, handlerFor(t, keyVM, f.clients()), sdkexec.SessionOptions{
