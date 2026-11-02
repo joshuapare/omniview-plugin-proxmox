@@ -62,8 +62,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/oklog/run v1.1.0 h1:GEenZ1cK0+q0+wsJew9qUg/DyD8k3JzYsZAi5gYi2mA=
 github.com/oklog/run v1.1.0/go.mod h1:sVPdnTZT1zYwAJeCMu2Th4T21pA3FPOQRfWjQlk7DVU=
-github.com/omniviewdev/plugin-sdk v0.13.1-0.20261102040750-09c0f9538869 h1:cowmq5BKH4ZZjJmYClIhSQPoYt6S3JRMNKJxNFQ82cM=
-github.com/omniviewdev/plugin-sdk v0.13.1-0.20261102040750-09c0f9538869/go.mod h1:VReFHa5ZuQmSbY654Humc8HmLShtexhid0a2TOxci9g=
+github.com/omniviewdev/plugin-sdk v0.13.1-0.20261102045909-eea5943f7a53 h1:t7/RdE2HMlS1jBUt3kzN3kMRMEsXRnGe5vVICoQpYUo=
+github.com/omniviewdev/plugin-sdk v0.13.1-0.20261102045909-eea5943f7a53/go.mod h1:VReFHa5ZuQmSbY654Humc8HmLShtexhid0a2TOxci9g=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
