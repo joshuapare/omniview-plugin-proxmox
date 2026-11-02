@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import {
   ContextMenu,
   EmptyState,
@@ -68,11 +68,21 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
         kind.columns.some((col) => formatValue(cellValue(entry.data, col), col).toLowerCase().includes(needle)),
     );
   }, [resources.entries, filter, kind]);
+  const sortColumns = useMemo<Array<SortableColumnDef<ProxmoxEntry>>>(
+    () =>
+      kind.columns.map((col) => ({
+        id: col.field,
+        header: col.header,
+        accessor: (row) => sortValue(cellValue(row.data, col)),
+      })),
+    [kind.columns],
+  );
+  const { sortedData, sort, onSort } = useSortableTable({ data: rows, columns: sortColumns });
 
   const total = rows.length;
   const currentPage = Math.min(pageIndex, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1));
   const first = currentPage * PAGE_SIZE;
-  const pageRows = rows.slice(first, first + PAGE_SIZE);
+  const pageRows = sortedData.slice(first, first + PAGE_SIZE);
   const paged = total > PAGE_SIZE;
   const pageLabel = `${first + 1}–${first + pageRows.length} of ${total}`;
 
@@ -99,8 +109,7 @@ export default function ResourceTable({ connectionId, resourceKey, label }: Prop
       </div>
     );
   } else {
-    // Kept mounted while filtering so the chosen sort survives an empty result.
-    body = <SortedTable resourceKey={resourceKey} kind={kind} rows={pageRows} />;
+    body = <SortedTable resourceKey={resourceKey} kind={kind} rows={pageRows} sort={sort} onSort={onSort} />;
   }
 
   return (
@@ -161,9 +170,11 @@ type SortedTableProps = {
   resourceKey: string;
   kind: Kind;
   rows: ProxmoxEntry[];
+  sort: ComponentProps<typeof SortableHeader>['sort'];
+  onSort: ComponentProps<typeof SortableHeader>['onSort'];
 };
 
-function SortedTable({ resourceKey, kind, rows }: SortedTableProps) {
+function SortedTable({ resourceKey, kind, rows, sort, onSort }: SortedTableProps) {
   const { isOpen } = useRightDrawer();
   const open = useOpenResource();
   const [selectedId, setSelectedId] = useState<string>();
@@ -171,17 +182,6 @@ function SortedTable({ resourceKey, kind, rows }: SortedTableProps) {
   const { columns } = kind;
   const actions = resourceActions(resourceKey);
   const { deps, dialogs } = useActionExecution();
-
-  const sortColumns = useMemo<Array<SortableColumnDef<ProxmoxEntry>>>(
-    () =>
-      columns.map((col) => ({
-        id: col.field,
-        header: col.header,
-        accessor: (row) => sortValue(cellValue(row.data, col)),
-      })),
-    [columns],
-  );
-  const { sortedData, sort, onSort } = useSortableTable({ data: rows, columns: sortColumns });
 
   // Row menus run the drawer's actions against a context bound to this table's handlers.
   const contexts = useMemo(() => {
@@ -198,7 +198,7 @@ function SortedTable({ resourceKey, kind, rows }: SortedTableProps) {
   };
 
   const hasActions = actions.length > 0;
-  const tableRows = sortedData.map((row) => {
+  const tableRows = rows.map((row) => {
     const ctx = contexts.get(row.id);
     return (
       <Table.Row
