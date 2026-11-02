@@ -16,7 +16,7 @@ const pollInterval = 10 * time.Second
 
 // source provides a best-effort snapshot followed by polling differences.
 func (k *kind) source(ctx context.Context, client *proxmox.Client, request resourcev2.SourceRequest, emit resourcev2.SourceEmitter) error {
-	p := pollSource{kind: k, client: client, target: request.Target, emit: emit}
+	p := pollSource{kind: k, client: client, target: request.Target, emit: emit, maxBatchItems: int(request.Limits.MaxBatchItems)}
 	if err := p.poll(ctx, true); err != nil {
 		return err
 	}
@@ -46,12 +46,13 @@ type seenEntry struct {
 }
 
 type pollSource struct {
-	kind     *kind
-	client   *proxmox.Client
-	target   resourcev2.ReadTarget
-	emit     resourcev2.SourceEmitter
-	seen     map[string]seenEntry
-	terminal bool
+	kind          *kind
+	client        *proxmox.Client
+	target        resourcev2.ReadTarget
+	emit          resourcev2.SourceEmitter
+	seen          map[string]seenEntry
+	maxBatchItems int
+	terminal      bool
 }
 
 func (p *pollSource) poll(ctx context.Context, initial bool) error {
@@ -105,10 +106,12 @@ func (p *pollSource) poll(ctx context.Context, initial bool) error {
 				changes = append(changes, resourcev2.SourceChange{Kind: resourcev2.SourceChangeRemove, Reference: &ref})
 			}
 		}
-		if len(changes) > 0 {
-			if err := p.emit.Changes(ctx, changes, nil); err != nil {
+		for len(changes) > 0 {
+			n := min(len(changes), p.maxBatchItems)
+			if err := p.emit.Changes(ctx, changes[:n], nil); err != nil {
 				return err
 			}
+			changes = changes[n:]
 		}
 	}
 	p.seen = current

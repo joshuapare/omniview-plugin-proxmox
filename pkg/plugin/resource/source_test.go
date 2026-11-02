@@ -51,7 +51,7 @@ func TestPollSourceSnapshotAndDiff(t *testing.T) {
 		return result, nil
 	}}
 	sink := &recordingSource{}
-	p := pollSource{kind: k, target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, emit: sink}
+	p := pollSource{kind: k, target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, emit: sink, maxBatchItems: 2}
 	ctx := context.Background()
 	if err := p.poll(ctx, true); err != nil {
 		t.Fatal(err)
@@ -72,11 +72,11 @@ func TestPollSourceSnapshotAndDiff(t *testing.T) {
 	if err := p.poll(ctx, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.changes) != 1 {
+	if len(sink.changes) != 2 || len(sink.changes[0]) != 2 || len(sink.changes[1]) != 1 {
 		t.Fatalf("changes: %+v", sink.changes)
 	}
 	got := map[string]string{}
-	for _, change := range sink.changes[0] {
+	for _, change := range append(sink.changes[0], sink.changes[1]...) {
 		if change.Kind == resourcev2.SourceChangeUpsert {
 			got[change.Observation.Record.Reference.Address.ID] = change.Kind
 		} else {
