@@ -215,6 +215,7 @@ guest-agent commands on PVE 8, which require `VM.Monitor`.
 | --- | --- | --- | --- |
 | Start, Shutdown, Reboot, Stop, Suspend/Resume (VMs) | VM, CT | `POST …/status/{action}` | `VM.PowerMgmt` |
 | Edit config | VM, CT | `GET`/`PUT …/config`, guarded by the config digest | `VM.Config.*` |
+| Pending configuration | VM | `GET /nodes/{node}/qemu/{vmid}/pending` | `VM.Audit` |
 | Delete (type the VMID; guest must be stopped; purges jobs and unreferenced disks) | VM, CT | `DELETE /nodes/{node}/{qemu,lxc}/{vmid}` | `VM.Allocate` |
 | Shell | Node, CT, VM (serial console) | `termproxy` + `vncwebsocket` | `Sys.Console` / `VM.Console`, plus a console login (see [setup](#3-write-the-config-file)) |
 | Metrics (CPU, memory, network, disk I/O; node load, IO wait, root disk) | Node, VM, CT | `GET …/rrddata` | `Sys.Audit` / `VM.Audit` |
@@ -232,8 +233,10 @@ require the QEMU guest agent. A command can continue after its timeout.
 
 Writes wait up to a minute for their Proxmox task and report its failure; a task still running then
 is reported as such. Config changes Proxmox cannot apply to a running guest stay pending until its
-next start, as in the Proxmox web UI. The node drawer also has a **Guests** view of the guests on
-that node with their CPU and memory.
+next start, as in the Proxmox web UI. The VM drawer's **Overview** shows the current
+and pending values, including removals, and indicates that a shutdown and start is needed. It
+refreshes after edits made in the plugin and has a manual refresh for external changes. The node
+drawer also has a **Guests** view of the guests on that node with their CPU and memory.
 
 ## Summary page
 

@@ -127,6 +127,23 @@ func TestGuestConfigSplitsDigest(t *testing.T) {
 	}
 }
 
+func TestVMPendingReadsCurrentPendingAndDeletions(t *testing.T) {
+	var got []recorded
+	client := guestServer(t, `[{"key":"cores","value":"2","pending":"4"},{"key":"net0","delete":2},{"key":"name","pending":""}]`, &got)
+	entries, err := client.VMPending(context.Background(), GuestRef{ID: "qemu/100", Node: "pve2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 || entries[0].(map[string]any)["pending"] != "4" ||
+		entries[1].(map[string]any)["delete"] != json.Number("2") ||
+		entries[2].(map[string]any)["pending"] != "" {
+		t.Fatalf("unexpected pending entries: %#v", entries)
+	}
+	if got[0].method != http.MethodGet || got[0].path != "/api2/json/nodes/pve2/qemu/100/pending" {
+		t.Fatalf("unexpected request %+v", got[0])
+	}
+}
+
 func TestUpdateGuestConfigEncodesForm(t *testing.T) {
 	var got []recorded
 	client := guestServer(t, `null`, &got)

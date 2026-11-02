@@ -119,6 +119,21 @@ func (c *Client) GuestConfig(ctx context.Context, g GuestRef) (map[string]any, s
 	return config, digest, nil
 }
 
+// VMPending returns Proxmox's current and pending VM configuration entries.
+func (c *Client) VMPending(ctx context.Context, g GuestRef) ([]any, error) {
+	var raw json.RawMessage
+	if err := c.get(ctx, g.path("/pending"), nil, &raw); err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var entries []any
+	if err := dec.Decode(&entries); err != nil {
+		return nil, fmt.Errorf("decode %s pending configuration: %w", g.ID, err)
+	}
+	return entries, nil
+}
+
 // UpdateGuestConfig sets the keys of set and deletes the keys in del with
 // PUT .../config. A non-empty digest makes Proxmox reject the change when
 // the config was modified since the digest was read.

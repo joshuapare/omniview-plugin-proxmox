@@ -67,6 +67,8 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/agent/exec-status"):
 		f.execReads++
 		_, _ = w.Write([]byte(`{"data":` + f.execStatus[min(f.execReads, len(f.execStatus))-1] + `}`))
+	case r.Method == http.MethodGet && path == "/nodes/pve2/qemu/100/pending":
+		_, _ = w.Write([]byte(`{"data":[{"key":"cores","value":"2","pending":"4"},{"key":"net0","value":"old","delete":2},{"key":"name","value":"web01"}]}`))
 	case r.Method == http.MethodGet && strings.Contains(path, "/tasks/"):
 		if !strings.HasSuffix(path, "/tasks/UPID:pve2:00001:task/status") {
 			f.t.Errorf("task polled at %s", path)
@@ -154,7 +156,7 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 	want := map[string]kindExpectation{
 		typeVM: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop", "guest-exec"},
-			actions: "start,shutdown,reboot,stop,suspend,resume,migrate,clone,guest-exec,config",
+			actions: "start,shutdown,reboot,stop,suspend,resume,migrate,clone,guest-exec,pending,config",
 		},
 		typeContainer: {
 			writes: guestWrites, watched: true, dangerous: []string{"stop"},
@@ -208,6 +210,7 @@ func TestKindsDeclareTheirWrites(t *testing.T) {
 		if got := strings.Join(ids, ","); got != exp.actions {
 			t.Errorf("%s: actions %s, want %s", k.typ, got, exp.actions)
 		}
+
 	}
 }
 
@@ -287,6 +290,26 @@ func TestConfigActionReturnsConfigDigestAndNode(t *testing.T) {
 	}
 	if _, ok := config["digest"]; ok {
 		t.Fatal("digest left in config")
+	}
+}
+
+func TestPendingActionReturnsCurrentAndPendingValues(t *testing.T) {
+	_, client := newFakePVE(t)
+	res, err := act(vms, client, "pending", "qemu/100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, ok := res["entries"].([]any)
+	if !ok || len(entries) != 3 {
+		t.Fatalf("unexpected entries: %#v", res["entries"])
+	}
+	first := entries[0].(map[string]any)
+	deleted := entries[1].(map[string]any)
+	if first["value"] != "2" || first["pending"] != "4" || deleted["delete"] != int64(2) {
+		t.Fatalf("unexpected pending values: %#v", entries)
+	}
+	if _, err := act(cts, client, "pending", "lxc/200"); err == nil {
+		t.Fatal("pending action must not be available for containers")
 	}
 }
 
