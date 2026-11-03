@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DrawerContext } from '@omniviewdev/runtime';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 import { bindActionDeps, type ActionDeps } from '../src/actions/actionDeps';
 import { resourceActions } from '../src/actions/resourceActions';
@@ -42,7 +43,10 @@ describe.each([
     expect(dialog.confirmLabel).toBe(label);
     expect(dialog.cancelLabel).toBe('Cancel');
     expect(dialog.body).toBeTruthy();
-    expect(dialog.title.props.children[1].props.children).toBe('k8s-0');
+    const titleMarkup = renderToStaticMarkup(dialog.title);
+    expect(titleMarkup).toContain(label);
+    expect(titleMarkup).toContain('<strong>k8s-0</strong>');
+    expect(titleMarkup).toContain('?');
     // Dismissing the dialog without invoking onConfirm must not execute anything.
     expect(executeAction).not.toHaveBeenCalled();
 
