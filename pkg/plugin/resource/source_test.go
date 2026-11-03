@@ -147,7 +147,7 @@ func TestSourceSnapshotAndCancellation(t *testing.T) {
 		return []proxmox.Entry{{ID: "vm-1", Raw: []byte(`{"status":"running"}`)}}, nil
 	}}
 	sink := &recordingSource{}
-	request := resourcev2.SourceRequest{Target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}}
+	request := resourcev2.SourceRequest{Target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, Representation: nativeRepresentation()}
 	err := k.source(ctx, nil, request, sink)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("source error = %v, want context canceled", err)
