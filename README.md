@@ -211,6 +211,9 @@ right-click). Each needs a privilege beyond `PVEAuditor`; without it the action 
 **Forbidden** naming the privilege. `PVEVMAdmin` on `/vms` covers guest operations except
 guest-agent commands on PVE 8, which require `VM.Monitor`.
 
+Start, shutdown, reboot, stop, suspend and resume ask for confirmation before running.
+Cancelling leaves the guest unchanged.
+
 | Operation | Kinds | API | Privilege |
 | --- | --- | --- | --- |
 | Start, Shutdown, Reboot, Stop, Suspend/Resume (VMs) | VM, CT | `POST …/status/{action}` | `VM.PowerMgmt` |
