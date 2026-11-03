@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/coder/websocket v1.8.14
-	github.com/omniviewdev/plugin-sdk v0.14.4-0.20261103023520-51509ad1bdcf
+	github.com/omniviewdev/plugin-sdk v0.14.4-0.20261103061138-b2279fb3e98a
 	gopkg.in/yaml.v3 v3.0.1
 )
 
