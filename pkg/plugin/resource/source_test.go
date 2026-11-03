@@ -119,3 +119,39 @@ func TestPollSourceErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestSourceSnapshotAndCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	k := &kind{list: func(context.Context, *proxmox.Client) ([]proxmox.Entry, error) {
+		cancel()
+		return []proxmox.Entry{{ID: "vm-1", Raw: []byte(`{"status":"running"}`)}}, nil
+	}}
+	sink := &recordingSource{}
+	request := resourcev2.SourceRequest{Target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}}
+	err := k.source(ctx, nil, request, sink)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("source error = %v, want context canceled", err)
+	}
+	if len(sink.observations) != 1 || sink.observations[0].Record.Reference.Address.ID != "vm-1" {
+		t.Fatalf("snapshot = %+v", sink.observations)
+	}
+	if sink.coverage.Enumeration != resourcev2.EnumerationExhausted || sink.continuity != resourcev2.ContinuityBestEffort {
+		t.Fatalf("snapshot boundary = %+v, %q", sink.coverage, sink.continuity)
+	}
+}
+
+func TestSourceInitialFailureResetsAndStops(t *testing.T) {
+	calls := 0
+	k := &kind{list: func(context.Context, *proxmox.Client) ([]proxmox.Entry, error) {
+		calls++
+		return nil, errors.New("upstream unavailable")
+	}}
+	sink := &recordingSource{}
+	if err := k.source(context.Background(), nil, resourcev2.SourceRequest{}, sink); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || sink.reset != resourcev2.SourceResetSourceInvalidated {
+		t.Fatalf("calls = %d, reset = %q", calls, sink.reset)
+	}
+}
