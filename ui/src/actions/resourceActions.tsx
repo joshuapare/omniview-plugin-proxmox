@@ -131,7 +131,7 @@ function guestActions(qemu: boolean): Action[] {
       title: 'Start',
       icon: <LuPlay />,
       enabled: (ctx) => status(ctx) === 'stopped' && !isTemplate(ctx),
-      action: (ctx) => runLifecycle(ctx, 'start', 'Starting'),
+      action: (ctx) => confirmLifecycle(ctx, 'start', 'Starting', 'Start', `Starts the ${noun}.`),
     },
     {
       title: 'Shutdown',
@@ -166,13 +166,13 @@ function guestActions(qemu: boolean): Action[] {
         title: 'Suspend',
         icon: <LuCirclePause />,
         enabled: isRunning,
-        action: (ctx) => runLifecycle(ctx, 'suspend', 'Suspending'),
+        action: (ctx) => confirmLifecycle(ctx, 'suspend', 'Suspending', 'Suspend', 'Pauses the virtual machine in memory.'),
       },
       {
         title: 'Resume',
         icon: <LuCirclePlay />,
         enabled: isPaused,
-        action: (ctx) => runLifecycle(ctx, 'resume', 'Resuming'),
+        action: (ctx) => confirmLifecycle(ctx, 'resume', 'Resuming', 'Resume', 'Resumes the paused virtual machine.'),
       },
     );
   }

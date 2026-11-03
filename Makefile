@@ -24,6 +24,7 @@ build: build-go build-ui
 test:
 	go test ./... -count=1
 	cd ui && pnpm typecheck
+	cd ui && pnpm test
 
 # Produces dist/<id>-<os>_<arch>.tar.gz, the names publish-plugin-action uploads.
 # Layout is what the app installs: plugin.yaml, assets/ and bin/plugin at the root.
