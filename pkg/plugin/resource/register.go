@@ -166,6 +166,6 @@ func nativeRepresentation() resourcev2.Representation {
 	return resourcev2.Representation{
 		ID:       representationID,
 		Revision: representationRev,
-		Schema:   resourcev2.SchemaBinding{State: "absent", Validation: "none", Unvalidated: []string{}},
+		Schema:   resourcev2.SchemaBinding{State: "absent"},
 	}
 }
