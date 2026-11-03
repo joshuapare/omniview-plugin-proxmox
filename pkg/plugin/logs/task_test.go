@@ -182,3 +182,27 @@ func TestTaskSourcesLabelNodeAndUPID(t *testing.T) {
 		t.Fatalf("non-task sources %+v", src)
 	}
 }
+
+func TestTaskLogForbiddenExplainsRequiredPermission(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "permission denied", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	client, err := proxmox.NewClient(proxmox.Cluster{ID: "c", URL: srv.URL, TokenID: "root@pam!t", TokenSecret: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := &taskLog{client: client, node: "pve1", upid: testUPID}
+	r, err := log.stream(context.Background(), sdklogs.LogStreamRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "API token needs Sys.Audit on /nodes/pve1") {
+		t.Fatalf("permission message = %q", out)
+	}
+}
