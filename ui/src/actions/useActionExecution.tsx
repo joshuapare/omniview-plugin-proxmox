@@ -5,7 +5,7 @@ import {
   useExecuteAction,
   useLogs,
   useResourceMutations,
-  useSnackbar,
+  useNotifications,
 } from '@omniviewdev/runtime';
 
 import { PLUGIN_ID } from '../constants';
@@ -28,7 +28,7 @@ export function useActionExecution({ onDeleted }: Options = {}) {
   const { createSession } = useExec({ pluginID: PLUGIN_ID });
   const { createLogSession } = useLogs({ pluginID: PLUGIN_ID });
   const { mutate } = useResourceMutations({ pluginID: PLUGIN_ID });
-  const { showSnackbar } = useSnackbar();
+  const { notify } = useNotifications();
   const [editTarget, setEditTarget] = useState<ActionTarget>();
   const [deleteTarget, setDeleteTarget] = useState<ActionTarget>();
 
@@ -38,11 +38,11 @@ export function useActionExecution({ onDeleted }: Options = {}) {
       executeAction,
       createExecSession: createSession,
       createLogSession,
-      notify: (message) => showSnackbar(message, 'info'),
+      notify: (message) => { void notify({ title: message, severity: 'info' }); },
       openEditConfig: setEditTarget,
       openDelete: setDeleteTarget,
     }),
-    [show, executeAction, createSession, createLogSession, showSnackbar],
+    [show, executeAction, createSession, createLogSession, notify],
   );
 
   const dialogs = (
