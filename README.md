@@ -167,6 +167,8 @@ and changes are pushed to the UI as best-effort updates. Cluster kinds are watch
 Ceph kind from the first time its view is opened (Ceph status also from the first Summary page of a
 cluster with Ceph). An unreachable cluster shows as a watch error and recovers on the next
 successful poll.
+Change batches that exceed source transport limits are split; an individual change that exceeds a
+limit still fails the source.
 
 A type is read in pages of up to 256 objects, sorted by ID. Tables page through them; the Summary
 page, Topology and the home page card use the first page of each kind and say so when a kind has

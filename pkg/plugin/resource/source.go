@@ -117,7 +117,7 @@ func (p *pollSource) poll(ctx context.Context, initial bool) error {
 		}
 		for len(changes) > 0 {
 			n := min(len(changes), p.maxBatchItems)
-			if err := p.emit.Changes(ctx, changes[:n], nil); err != nil {
+			if err := p.emitChanges(ctx, changes[:n]); err != nil {
 				return err
 			}
 			changes = changes[n:]
@@ -125,4 +125,18 @@ func (p *pollSource) poll(ctx context.Context, initial bool) error {
 	}
 	p.seen = current
 	return nil
+}
+
+// emitChanges splits batches rejected by the SDK's resource limits. A single
+// change that exceeds a limit remains an error.
+func (p *pollSource) emitChanges(ctx context.Context, changes []resourcev2.SourceChange) error {
+	err := p.emit.Changes(ctx, changes, nil)
+	if err == nil || len(changes) == 1 || resourcev2.ErrorCode(err) != "RESOURCE_LIMIT" {
+		return err
+	}
+	mid := len(changes) / 2
+	if err := p.emitChanges(ctx, changes[:mid]); err != nil {
+		return err
+	}
+	return p.emitChanges(ctx, changes[mid:])
 }

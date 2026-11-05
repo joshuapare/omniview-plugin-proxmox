@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
@@ -35,6 +36,59 @@ func (s *recordingSource) Changes(_ context.Context, changes []resourcev2.Source
 func (s *recordingSource) Reset(_ context.Context, reason, _ string) error {
 	s.reset = reason
 	return nil
+}
+
+type boundedChangesSource struct {
+	recordingSource
+	maxBytes int
+}
+
+func (s *boundedChangesSource) Changes(ctx context.Context, changes []resourcev2.SourceChange, coverage *resourcev2.SourceCoverage) error {
+	size, err := resourcev2.SourceChangesWireSize(resourcev2.SourceChanges{Changes: changes, Coverage: coverage})
+	if err != nil {
+		return err
+	}
+	if size > s.maxBytes {
+		return resourcev2.NewError("RESOURCE_LIMIT", "source changes exceed frame limit")
+	}
+	return s.recordingSource.Changes(ctx, changes, coverage)
+}
+
+func TestPollSourceSplitsOversizedChangeFrames(t *testing.T) {
+	payload := strings.Repeat("x", 40000)
+	calls := 0
+	k := &kind{list: func(context.Context, *proxmox.Client) ([]proxmox.Entry, error) {
+		calls++
+		if calls == 1 {
+			return nil, nil
+		}
+		return []proxmox.Entry{
+			{ID: "a", Raw: []byte(`{"description":"` + payload + `"}`)},
+			{ID: "b", Raw: []byte(`{"description":"` + payload + `"}`)},
+		}, nil
+	}}
+	sink := &boundedChangesSource{maxBytes: 65500}
+	p := pollSource{kind: k, target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, binding: nativeRepresentation(), emit: sink, maxBatchItems: 2}
+	if err := p.poll(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.poll(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.changes) != 2 || len(sink.changes[0]) != 1 || len(sink.changes[1]) != 1 {
+		t.Fatalf("changes: %+v", sink.changes)
+	}
+}
+
+func TestEmitChangesPreservesSingleRecordLimit(t *testing.T) {
+	sink := &boundedChangesSource{maxBytes: 1}
+	p := pollSource{emit: sink}
+	ref := reference(providerID, "a", typeVM, "vm")
+	change := resourcev2.SourceChange{Kind: resourcev2.SourceChangeRemove, Reference: &ref}
+	err := p.emitChanges(context.Background(), []resourcev2.SourceChange{change})
+	if resourcev2.ErrorCode(err) != "RESOURCE_LIMIT" || len(sink.changes) != 0 {
+		t.Fatalf("error=%v, changes=%v", err, sink.changes)
+	}
 }
 
 func TestPollSourceSnapshotAndDiff(t *testing.T) {
