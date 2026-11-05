@@ -5,8 +5,8 @@ containers and the cluster's Ceph (status, pools, OSDs, monitors, managers, meta
 CephFS). Guests can be started, shut down, stopped, rebooted, edited and destroyed; nodes and guests
 have metrics and shells; nodes and Ceph daemons have logs. See [Operations](#operations).
 
-Requires Omniview 0.14 or later: the plugin is built on plugin-sdk 0.10 (resource API v2,
-host-owned settings) and `@omniviewdev/runtime` 0.14.
+Requires Omniview 0.30.0 or later and `@omniviewdev/runtime` 0.30.0 for action
+notifications.
 
 ## Setup
 

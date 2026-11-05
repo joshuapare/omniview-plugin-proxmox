@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"time"
 
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
@@ -16,7 +17,7 @@ const pollInterval = 10 * time.Second
 
 // source provides a best-effort snapshot followed by polling differences.
 func (k *kind) source(ctx context.Context, client *proxmox.Client, request resourcev2.SourceRequest, emit resourcev2.SourceEmitter) error {
-	p := pollSource{kind: k, client: client, target: request.Target, emit: emit, maxBatchItems: int(request.Limits.MaxBatchItems)}
+	p := pollSource{kind: k, client: client, target: request.Target, binding: request.Representation, emit: emit, maxBatchItems: int(request.Limits.MaxBatchItems)}
 	if err := p.poll(ctx, true); err != nil {
 		return err
 	}
@@ -41,14 +42,15 @@ func (k *kind) source(ctx context.Context, client *proxmox.Client, request resou
 }
 
 type seenEntry struct {
-	raw    json.RawMessage
-	record resourcev2.Record
+	raw       json.RawMessage
+	reference resourcev2.ResourceReference
 }
 
 type pollSource struct {
 	kind          *kind
 	client        *proxmox.Client
 	target        resourcev2.ReadTarget
+	binding       resourcev2.Representation
 	emit          resourcev2.SourceEmitter
 	seen          map[string]seenEntry
 	maxBatchItems int
@@ -83,8 +85,15 @@ func (p *pollSource) poll(ctx context.Context, initial bool) error {
 		if err != nil {
 			return err
 		}
-		current[e.ID] = seenEntry{raw: e.Raw, record: rec}
-		observation := resourcev2.SourceObservation{Record: rec}
+		if !reflect.DeepEqual(rec.Representation, p.binding) {
+			if err := p.emit.Reset(ctx, resourcev2.SourceResetBindingChanged, "Source binding changed."); err != nil {
+				return err
+			}
+			p.terminal = true
+			return nil
+		}
+		current[e.ID] = seenEntry{raw: e.Raw, reference: rec.Reference}
+		observation := resourcev2.SourceObservation{Record: resourcev2.CompactSourceRecord(rec)}
 		if initial {
 			observations = append(observations, observation)
 		} else {
@@ -102,7 +111,7 @@ func (p *pollSource) poll(ctx context.Context, initial bool) error {
 	} else {
 		for id, prev := range p.seen {
 			if _, ok := current[id]; !ok {
-				ref := prev.record.Reference
+				ref := prev.reference
 				changes = append(changes, resourcev2.SourceChange{Kind: resourcev2.SourceChangeRemove, Reference: &ref})
 			}
 		}
