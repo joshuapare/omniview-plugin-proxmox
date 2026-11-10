@@ -5,8 +5,7 @@ containers and the cluster's Ceph (status, pools, OSDs, monitors, managers, meta
 CephFS). Guests can be started, shut down, stopped, rebooted, edited and destroyed; nodes and guests
 have metrics and shells; nodes and Ceph daemons have logs. See [Operations](#operations).
 
-Requires Omniview 0.30.0 or later and `@omniviewdev/runtime` 0.30.0 for action
-notifications.
+Requires Omniview 0.35.1 or later. Action notifications use `@omniviewdev/runtime` 0.30.0.
 
 ## Setup
 
@@ -306,6 +305,10 @@ Push a `vX.Y.Z` tag. `.github/workflows/publish.yaml` runs on the `homelab` runn
 cross-compiles every platform, publishes `X.Y.Z` to the marketplace at the `OMNIVIEW_API_URL`
 repository variable as `mononen/proxmox`, and creates a GitHub release with the archives. The tag
 overrides the `version` in `plugin.yaml`.
+
+The next release is `v0.3.2`. It requires Omniview 0.35.1 or later and Go 1.27
+to build. Merge the release changes and wait for CI and the Omniview 0.35.1 release
+before tagging the merge commit.
 
 The workflow needs the `OMNIVIEW_API_URL` and `OMNIVIEW_STORAGE_HOST` repository variables and the
 `OMNIVIEW_API_KEY` secret. To build without publishing, run the workflow by hand with a version and
