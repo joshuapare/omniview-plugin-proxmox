@@ -53,6 +53,10 @@ jobs:
           echo "value=$version" >> "$GITHUB_OUTPUT"
           echo "platforms=${PLATFORMS// /,}" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - uses: pnpm/action-setup@v4
         with:
           version: 12.14.0
@@ -103,7 +107,7 @@ jobs:
           publisher-slug: mononen
           plugin-id: proxmox
           version: ${{ steps.version.outputs.value }}
-          min-ide-version: "0.30.0"
+          min-ide-version: "0.35.1"
           artifact-path: dist/
           architectures: ${{ steps.version.outputs.platforms }}
 
