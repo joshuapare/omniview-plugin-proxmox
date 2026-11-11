@@ -77,6 +77,7 @@ type provider struct {
 
 var (
 	_ resourcev2.RelationshipProvider      = (*provider)(nil)
+	_ resourcev2.SchemaResolver            = (*provider)(nil)
 	_ resourcev2.FeatureNegotiator         = (*provider)(nil)
 	_ resourcev2.ConnectionContextProvider = (*provider)(nil)
 )
@@ -99,14 +100,46 @@ func newProvider(configFiles func() ([]string, error)) (*provider, error) {
 	return &provider{Controller: controller}, nil
 }
 
-// Features adds the relationship declarations to the controller's traits.
+// Features adds relationship declarations and known schema absence to the controller's traits.
 func (p *provider) Features(ctx context.Context) (resourcev2.FeatureSet, error) {
 	features, err := p.Controller.Features(ctx)
 	if err != nil {
 		return features, err
 	}
-	features.Traits = append(features.Traits, resourcev2.FeatureRelationships)
+	features.Traits = append(features.Traits, resourcev2.FeatureRelationships, resourcev2.FeatureSchemaResolver)
 	return features, nil
+}
+
+// ResolveSchema preserves known native-schema absence for an exact current binding.
+func (p *provider) ResolveSchema(ctx context.Context, request resourcev2.SchemaRequest) (resourcev2.SchemaBinding, error) {
+	if err := resourcev2.ValidateSchemaRequest(request); err != nil {
+		return resourcev2.SchemaBinding{}, err
+	}
+	err := p.WithClient(ctx, request.Route, func(ctx context.Context, _ *proxmox.Client) error {
+		catalog, err := p.Catalog(ctx, resourcev2.CatalogRequest{Route: request.Route})
+		if err != nil {
+			return err
+		}
+		for _, descriptor := range catalog.Types {
+			if descriptor.Type != request.Type {
+				continue
+			}
+			if request.Target.Auxiliary != nil {
+				return resourcev2.NewError("UNSUPPORTED", "Proxmox resources do not provide auxiliary schemas.")
+			}
+			for _, representation := range descriptor.Representations {
+				if representation == *request.Target.Representation {
+					return ctx.Err()
+				}
+			}
+			return resourcev2.NewError("RESET_REQUIRED", "The exact schema representation is not current.")
+		}
+		return resourcev2.NewError("NOT_FOUND", "Resource type is not present in this connection catalog.")
+	})
+	if err != nil {
+		return resourcev2.SchemaBinding{}, err
+	}
+	return resourcev2.SchemaBinding{State: "absent"}, nil
 }
 
 // cephState records, per started connection, whether its cluster runs Ceph.
@@ -167,6 +200,5 @@ func nativeRepresentation() resourcev2.Representation {
 	return resourcev2.Representation{
 		ID:       representationID,
 		Revision: representationRev,
-		Schema:   resourcev2.SchemaBinding{State: "absent"},
 	}
 }

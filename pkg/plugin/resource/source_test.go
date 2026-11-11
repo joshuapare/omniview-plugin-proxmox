@@ -113,7 +113,7 @@ func TestPollSourceSnapshotAndDiff(t *testing.T) {
 	if len(sink.observations) != 2 || sink.observations[0].Record.Reference.Address.ID != "a" || sink.observations[1].Record.Reference.Address.ID != "b" {
 		t.Fatalf("snapshot: %+v", sink.observations)
 	}
-	if got, want := sink.observations[0].Record.Representation, resourcev2.CompactSourceRecord(resourcev2.Record{Representation: nativeRepresentation()}).Representation; !reflect.DeepEqual(got, want) {
+	if got, want := sink.observations[0].Record.Representation, (resourcev2.Representation{ID: "native", Revision: "1"}); got != want {
 		t.Fatalf("snapshot representation: %+v, want %+v", got, want)
 	}
 	wantCoverage := resourcev2.SourceCoverage{Enumeration: resourcev2.EnumerationExhausted, Consistency: resourcev2.ConsistencyBestEffort, Limitations: []string{"10s polling diff; intermediate states between polls are not observed"}}
@@ -147,18 +147,23 @@ func TestPollSourceSnapshotAndDiff(t *testing.T) {
 }
 
 func TestPollSourceBindingChanged(t *testing.T) {
-	k := &kind{list: func(context.Context, *proxmox.Client) ([]proxmox.Entry, error) {
-		return []proxmox.Entry{{ID: "a", Raw: []byte(`{"status":"running"}`)}}, nil
-	}}
-	binding := nativeRepresentation()
-	binding.Revision = "different"
-	sink := &recordingSource{}
-	p := pollSource{kind: k, target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, binding: binding, emit: sink, maxBatchItems: 2}
-	if err := p.poll(context.Background(), true); err != nil {
-		t.Fatal(err)
-	}
-	if sink.reset != resourcev2.SourceResetBindingChanged || !p.terminal || len(sink.observations) != 0 {
-		t.Fatalf("reset=%q terminal=%v observations=%+v", sink.reset, p.terminal, sink.observations)
+	for _, binding := range []resourcev2.Representation{
+		{ID: "other", Revision: "1"},
+		{ID: "native", Revision: "different"},
+	} {
+		t.Run(binding.ID+"/"+binding.Revision, func(t *testing.T) {
+			k := &kind{list: func(context.Context, *proxmox.Client) ([]proxmox.Entry, error) {
+				return []proxmox.Entry{{ID: "a", Raw: []byte(`{"status":"running"}`)}}, nil
+			}}
+			sink := &recordingSource{}
+			p := pollSource{kind: k, target: resourcev2.ReadTarget{Provider: providerID, Authority: "a", Type: typeVM}, binding: binding, emit: sink, maxBatchItems: 2}
+			if err := p.poll(context.Background(), true); err != nil {
+				t.Fatal(err)
+			}
+			if sink.reset != resourcev2.SourceResetBindingChanged || !p.terminal || len(sink.observations) != 0 {
+				t.Fatalf("reset=%q terminal=%v observations=%+v", sink.reset, p.terminal, sink.observations)
+			}
+		})
 	}
 }
 

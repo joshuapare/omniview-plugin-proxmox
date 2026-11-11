@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"reflect"
 	"time"
 
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
@@ -129,7 +128,7 @@ func (p *pollSource) pollOnce(ctx context.Context, initial bool) error {
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(rec.Representation, p.binding) {
+		if rec.Representation != p.binding {
 			return p.terminate(ctx, resourcev2.SourceResetBindingChanged, "Source binding changed.", "binding_changed", nil)
 		}
 		current[e.ID] = seenEntry{raw: e.Raw, reference: rec.Reference}

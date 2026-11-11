@@ -5,7 +5,7 @@ containers and the cluster's Ceph (status, pools, OSDs, monitors, managers, meta
 CephFS). Guests can be started, shut down, stopped, rebooted, edited and destroyed; nodes and guests
 have metrics and shells; nodes and Ceph daemons have logs. See [Operations](#operations).
 
-Requires Omniview 0.35.1 or later. Action notifications use `@omniviewdev/runtime` 0.30.0.
+Requires Omniview 0.36.0 or later and `@omniviewdev/runtime` 0.36.0. Upgrade the host and plugin together.
 
 ## Setup
 
@@ -314,9 +314,13 @@ cross-compiles every platform, publishes `X.Y.Z` to the marketplace at the `OMNI
 repository variable as `mononen/proxmox`, and creates a GitHub release with the archives. The tag
 overrides the `version` in `plugin.yaml`.
 
-The next release is `v0.3.2`. It requires Omniview 0.35.1 or later and Go 1.27
-to build. Merge the release changes and wait for CI and the Omniview 0.35.1 release
-before tagging the merge commit.
+The next release is `v0.4.0`. It requires Omniview 0.36.0 or later and Go 1.27
+to build. It uses SDK 0.20.0's resource wire version 3 and runtime/Vite 0.36.0;
+Proxmox 0.3.2 and 0.3.3 use resource wire version 2 and cannot run on the new host.
+The `native` representation remains revision `1`, with schema absence resolved
+separately; resource bodies, relationships, actions and utility capabilities are unchanged.
+Merge the release changes and wait for CI and the coordinated SDK 0.20.0 and
+Omniview 0.36.0 package publications before tagging the merge commit.
 
 The workflow needs the `OMNIVIEW_API_URL` and `OMNIVIEW_STORAGE_HOST` repository variables and the
 `OMNIVIEW_API_KEY` secret. To build without publishing, run the workflow by hand with a version and

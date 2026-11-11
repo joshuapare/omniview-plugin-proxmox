@@ -181,7 +181,7 @@ func TestCatalogAddsCephTypesOnlyWhereCephAnswers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, types := catalogTypes(t, p)
+		catalog, types := catalogTypes(t, p)
 		for _, k := range staticKinds {
 			if !types[k.typ] {
 				t.Errorf("ceph=%v: static type %s missing", hasCeph, k.typ)
@@ -192,6 +192,70 @@ func TestCatalogAddsCephTypesOnlyWhereCephAnswers(t *testing.T) {
 				t.Errorf("ceph=%v: Ceph type %s offered=%v", hasCeph, k.typ, types[k.typ])
 			}
 		}
+		for _, descriptor := range catalog.Types {
+			representation := resourcev2.Representation{ID: "native", Revision: "1"}
+			if len(descriptor.Representations) != 1 || descriptor.Representations[0] != representation {
+				t.Fatalf("%s representations: %+v", descriptor.Type, descriptor.Representations)
+			}
+			binding, err := p.ResolveSchema(ctx, resourcev2.SchemaRequest{
+				Route: lab, Type: descriptor.Type,
+				Target: resourcev2.SchemaTarget{Representation: &representation},
+			})
+			if err != nil || binding.State != "absent" {
+				t.Fatalf("ceph=%v %s native schema: %+v, %v", hasCeph, descriptor.Type, binding, err)
+			}
+		}
+	}
+}
+
+func TestNativeSchemaResolutionRequiresSelectedBinding(t *testing.T) {
+	p, err := startedProvider(t, noCephPVE(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	features, err := p.Features(ctx)
+	if err != nil || !features.Has(resourcev2.FeatureSchemaResolver) || features.Has(resourcev2.FeatureSchemaDocuments) {
+		t.Fatalf("native schema features: %+v, %v", features, err)
+	}
+	target := func(id, revision string) resourcev2.SchemaTarget {
+		return resourcev2.SchemaTarget{Representation: &resourcev2.Representation{ID: id, Revision: revision}}
+	}
+	for _, test := range []struct {
+		name   string
+		route  resourcev2.AccessRoute
+		typ    string
+		target resourcev2.SchemaTarget
+		code   string
+	}{
+		{name: "selected", route: lab, typ: typeVM, target: target("native", "1")},
+		{name: "different format", route: lab, typ: typeVM, target: target("other", "1"), code: "RESET_REQUIRED"},
+		{name: "stale revision", route: lab, typ: typeVM, target: target("native", "old"), code: "RESET_REQUIRED"},
+		{name: "missing revision", route: lab, typ: typeVM, target: target("native", ""), code: "INVALID_REQUEST"},
+		{name: "missing target", route: lab, typ: typeVM, code: "INVALID_REQUEST"},
+		{name: "unknown type", route: lab, typ: "unknown", target: target("native", "1"), code: "NOT_FOUND"},
+		{name: "unavailable Ceph type", route: lab, typ: typeCephPool, target: target("native", "1"), code: "NOT_FOUND"},
+		{name: "unstarted route", route: resourcev2.AccessRoute{Connection: "other"}, typ: typeVM, target: target("native", "1"), code: "INVALID_REQUEST"},
+		{name: "missing route", typ: typeVM, target: target("native", "1"), code: "INVALID_REQUEST"},
+		{name: "unsupported auxiliary", route: lab, typ: typeVM, code: "UNSUPPORTED", target: resourcev2.SchemaTarget{
+			Auxiliary: &resourcev2.AuxiliarySchemaTarget{Key: "config", Reference: reference(providerID, "test-authority", typeVM, "qemu/100")},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding, err := p.ResolveSchema(ctx, resourcev2.SchemaRequest{Route: test.route, Type: test.typ, Target: test.target})
+			if test.code == "" {
+				if err != nil || binding.State != "absent" {
+					t.Fatalf("native schema: %+v, %v", binding, err)
+				}
+			} else if resourcev2.ErrorCode(err) != test.code || binding.State != "" {
+				t.Fatalf("schema: %+v, %v; want %s without a binding", binding, err, test.code)
+			}
+		})
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	binding, err := p.ResolveSchema(canceled, resourcev2.SchemaRequest{Route: lab, Type: typeVM, Target: target("native", "1")})
+	if !errors.Is(err, context.Canceled) || binding.State != "" {
+		t.Fatalf("canceled schema: %+v, %v", binding, err)
 	}
 }
 
@@ -234,6 +298,9 @@ func TestEnumeratePagesThroughController(t *testing.T) {
 			if rec.Reference.Address.ID == "qemu/102" && rec.Body.Map["maxmem"].Uint != "18446744073709551615" {
 				t.Fatalf("maxmem lost precision: %+v", rec.Body.Map["maxmem"])
 			}
+			if rec.Representation != (resourcev2.Representation{ID: "native", Revision: "1"}) {
+				t.Fatalf("record representation: %+v", rec.Representation)
+			}
 		}
 		if cursor = page.NextCursor; cursor == nil {
 			break
@@ -246,6 +313,9 @@ func TestEnumeratePagesThroughController(t *testing.T) {
 	rec, err := p.Get(pinned, resourcev2.GetRequest{Route: lab, Reference: reference(providerID, "test-authority", typeVM, "qemu/101"), Representation: representationID})
 	if err != nil || rec.Body.Map["vmid"].Int != "101" {
 		t.Fatalf("get qemu/101: %+v, %v", rec, err)
+	}
+	if rec.Representation != (resourcev2.Representation{ID: "native", Revision: "1"}) {
+		t.Fatalf("get representation: %+v", rec.Representation)
 	}
 }
 

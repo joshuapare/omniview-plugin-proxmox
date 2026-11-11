@@ -107,7 +107,7 @@ jobs:
           publisher-slug: mononen
           plugin-id: proxmox
           version: ${{ steps.version.outputs.value }}
-          min-ide-version: "0.35.1"
+          min-ide-version: "0.36.0"
           artifact-path: dist/
           architectures: ${{ steps.version.outputs.platforms }}
 
