@@ -145,6 +145,7 @@ func (s *cephState) catalog(ctx context.Context, request resourcev2.CatalogReque
 	}
 	ceph, started := s.get(request.Route.Connection)
 	if !started {
+		resLog().Debugw(ctx, "catalog requested for a connection that is not started")
 		return resourcev2.Catalog{}, resourcev2.NewError("INVALID_REQUEST", "Connection is not started.")
 	}
 	kinds := staticKinds

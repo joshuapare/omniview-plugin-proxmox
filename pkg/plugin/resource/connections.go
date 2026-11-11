@@ -9,9 +9,13 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
+	"time"
 
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
 	"github.com/omniviewdev/plugin-sdk/pkg/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
 )
@@ -35,15 +39,23 @@ const (
 // connection checks the API token and records whether the cluster runs Ceph.
 func lifecycle(configFiles func() ([]string, error), ceph *cephState) *resourcev2.Lifecycle[proxmox.Client] {
 	return &resourcev2.Lifecycle[proxmox.Client]{
-		LoadConnections: func(context.Context) ([]types.Connection, error) {
+		LoadConnections: func(ctx context.Context) ([]types.Connection, error) {
 			files, err := configFiles()
 			if err != nil {
+				resLog().Warnw(ctx, "proxmox config files setting unreadable", "outcome", "failure", "error_class", "other")
 				return nil, fmt.Errorf("read %s setting: %w", SettingConfigFiles, err)
 			}
-			return loadConnections(files)
+			return loadConnections(ctx, files)
 		},
-		CreateClient: func(_ context.Context, conn types.Connection) (*proxmox.Client, error) {
-			return newClient(&conn)
+		CreateClient: func(ctx context.Context, conn types.Connection) (*proxmox.Client, error) {
+			trace.SpanFromContext(ctx).AddEvent("create_client", trace.WithAttributes(attribute.String("proxmox.cluster_id", conn.ID)))
+			client, err := newClient(&conn)
+			if err != nil {
+				resLog().Warnw(ctx, "proxmox client creation failed", append([]any{"cluster_id", conn.ID}, resClassFields(err)...)...)
+				return nil, err
+			}
+			resLog().Debugw(ctx, "proxmox client created", "cluster_id", conn.ID)
+			return client, nil
 		},
 		DestroyClient: func(_ context.Context, client *proxmox.Client) error {
 			client.Close()
@@ -51,15 +63,30 @@ func lifecycle(configFiles func() ([]string, error), ceph *cephState) *resourcev
 		},
 		CheckConnection: checkConnection,
 		OnStart: func(ctx context.Context, conn types.Connection, client *proxmox.Client) error {
-			if _, err := client.Version(ctx); err != nil {
-				return connectError(err)
+			ctx, span := proxmox.Tracer().Start(ctx, "proxmox.connection.start")
+			span.SetAttributes(attribute.String("proxmox.cluster_id", conn.ID))
+			start := time.Now()
+			finish := func(err error, hasCeph bool) error {
+				span.SetAttributes(attribute.Bool("proxmox.ceph.present", hasCeph))
+				resEndConnection(span, err)
+				if err != nil {
+					resLog().Warnw(ctx, "proxmox connection start failed", append([]any{"cluster_id", conn.ID, "duration_ms", time.Since(start).Milliseconds()}, resClassFields(err)...)...)
+					return connectError(err)
+				}
+				resLog().Infow(ctx, "proxmox connected", "cluster_id", conn.ID, "ceph", hasCeph, "duration_ms", time.Since(start).Milliseconds())
+				return nil
 			}
+			if _, err := client.Version(ctx); err != nil {
+				return finish(err, false)
+			}
+			span.AddEvent("version")
 			hasCeph, err := probeCeph(ctx, client)
 			if err != nil {
-				return connectError(err)
+				return finish(err, false)
 			}
+			span.AddEvent("ceph_probe", trace.WithAttributes(attribute.Bool("proxmox.ceph.present", hasCeph)))
 			ceph.set(conn.ID, hasCeph)
-			return nil
+			return finish(nil, hasCeph)
 		},
 		OnStop: func(_ context.Context, conn types.Connection, _ *proxmox.Client) error {
 			ceph.forget(conn.ID)
@@ -83,15 +110,18 @@ func probeCeph(ctx context.Context, client *proxmox.Client) (bool, error) {
 	}
 }
 
-func loadConnections(files []string) ([]types.Connection, error) {
+func loadConnections(ctx context.Context, files []string) ([]types.Connection, error) {
 	connections := make([]types.Connection, 0, len(files))
 	owner := make(map[string]string)
-	for _, file := range files {
+	for i, file := range files {
 		clusters, err := proxmox.LoadFile(file)
 		if errors.Is(err, fs.ErrNotExist) {
+			// A listed config file that does not exist yet is not an error.
+			resLog().Debugw(ctx, "proxmox config file missing", "config_index", i)
 			continue
 		}
 		if err != nil {
+			resLog().Warnw(ctx, "proxmox config file unreadable", append([]any{"config_index", i}, resClassFields(err)...)...)
 			return nil, err
 		}
 		for _, c := range clusters {
@@ -115,6 +145,7 @@ func loadConnections(files []string) ([]types.Connection, error) {
 			connections = append(connections, *conn)
 		}
 	}
+	resLog().Debugw(ctx, "proxmox connections loaded", "files", len(files), "connections", len(connections))
 	sort.Slice(connections, func(i, j int) bool { return connections[i].Name < connections[j].Name })
 	return connections, nil
 }
@@ -134,15 +165,34 @@ func newClient(conn *types.Connection) (*proxmox.Client, error) {
 }
 
 func checkConnection(ctx context.Context, conn types.Connection, client *proxmox.Client) (types.ConnectionStatus, error) {
+	ctx, span := proxmox.Tracer().Start(ctx, "proxmox.connection.check")
+	span.SetAttributes(attribute.String("proxmox.cluster_id", conn.ID))
 	status := types.ConnectionStatus{Connection: &conn}
 	if _, err := client.Version(ctx); err != nil {
 		failure := classifyConnectionError(err)
 		status.Status, status.Error, status.Details = failure.status, failure.title, failure.details
+		span.SetAttributes(attribute.String("status", string(failure.status)), attribute.String("error_code", failure.code))
+		proxmox.EndSpan(span, err)
+		proxmox.ConnectionCheck(strings.ToLower(failure.code))
+		resLog().Warnw(ctx, "proxmox connection check failed", append([]any{"cluster_id", conn.ID, "status", string(failure.status)}, resClassFields(err)...)...)
 		return status, nil
 	}
 	status.Status = types.ConnectionStatusConnected
 	status.Details = "Connected to the Proxmox VE API"
+	span.SetAttributes(attribute.String("status", string(status.Status)))
+	proxmox.EndSpan(span, nil)
+	proxmox.ConnectionCheck("connected")
+	resLog().Debugw(ctx, "proxmox connection check", "cluster_id", conn.ID, "status", string(status.Status))
 	return status, nil
+}
+
+// resEndConnection records the classification of a failed start on span:
+// the connection failure's resource error code next to the Proxmox class.
+func resEndConnection(span trace.Span, err error) {
+	if err != nil {
+		span.SetAttributes(attribute.String("error_code", classifyConnectionError(err).code))
+	}
+	proxmox.EndSpan(span, err)
 }
 
 // connectError is a failed connection start, classified like a check.
@@ -184,7 +234,8 @@ func classifyConnectionError(err error) connectionFailure {
 		return connectionFailure{types.ConnectionStatusTimeout, "TIMEOUT", "Timed out",
 			"The Proxmox API did not respond in time."}
 	default:
+		_, class, _ := proxmox.ClassifyError(err)
 		return connectionFailure{types.ConnectionStatusUnavailable, "CONNECTION_ERROR", "Unavailable",
-			fmt.Sprintf("Could not reach the Proxmox API: %v", err)}
+			"Could not reach the Proxmox API (" + class + ")."}
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
@@ -210,21 +213,27 @@ func (k *kind) guestExec(ctx context.Context, client *proxmox.Client, id string,
 	if err != nil {
 		return resourcev2.Value{}, &writeError{privilege: privGuestAgent, what: what, err: err}
 	}
-
+	span := trace.SpanFromContext(ctx)
+	span.AddEvent("agent.exec.started", trace.WithAttributes(attribute.Int64("timeout_seconds", timeout)))
 	waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(agentPollInterval)
 	defer ticker.Stop()
 	var status proxmox.AgentExecStatus
+	polls := 0
 	for {
+		polls++
 		status, err = client.AgentExecStatus(waitCtx, g, pid)
 		if err != nil {
 			if ctx.Err() == nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				span.AddEvent("agent.exec.timeout", trace.WithAttributes(attribute.Int("polls", polls)))
+				resLog().Warnw(ctx, "guest agent command still running at timeout", "kind", k.typ, "timeout_seconds", timeout, "polls", polls)
 				break
 			}
 			return resourcev2.Value{}, &writeError{privilege: privGuestAgent, what: what, err: err}
 		}
 		if status.Exited == 1 {
+			resLog().Debugw(ctx, "guest agent command exited", "kind", k.typ, "polls", polls)
 			break
 		}
 		select {
@@ -234,6 +243,8 @@ func (k *kind) guestExec(ctx context.Context, client *proxmox.Client, id string,
 		case <-ticker.C:
 			continue
 		}
+		span.AddEvent("agent.exec.timeout", trace.WithAttributes(attribute.Int("polls", polls)))
+		resLog().Warnw(ctx, "guest agent command still running at timeout", "kind", k.typ, "timeout_seconds", timeout, "polls", polls)
 		break
 	}
 	out := map[string]any{

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // guestConfigTTL is how long a guest's storage usage is reused before its
@@ -51,8 +53,14 @@ type guestStorageCache struct {
 // there is none. Cached guests of the listed types (qemu, lxc) that are not
 // in guests are forgotten.
 func (c *Client) GuestStorage(ctx context.Context, guests []Guest) map[string][]string {
+	ctx, span := Tracer().Start(ctx, "proxmox.guest_storage")
+	lockStart := time.Now()
 	c.storage.mu.Lock()
+	lockWait := time.Since(lockStart)
 	defer c.storage.mu.Unlock()
+	defer func() {
+		span.End()
+	}()
 	if c.storage.guests == nil {
 		c.storage.guests = map[string]guestStorage{}
 	}
@@ -66,6 +74,15 @@ func (c *Client) GuestStorage(ctx context.Context, guests []Guest) map[string][]
 		}
 	}
 
+	misses, hits := len(stale), len(guests)-len(stale)
+	span.SetAttributes(
+		attribute.String("proxmox.cluster_id", c.ClusterID),
+		attribute.Int("guests", len(guests)),
+		attribute.Int("cache_hits", hits),
+		attribute.Int("cache_misses", misses),
+		attribute.Int64("lock_wait_ms", durationMs(lockWait)),
+	)
+
 	read := make([]*guestStorage, len(stale))
 	sem := make(chan struct{}, configReadConcurrency)
 	var wg sync.WaitGroup
@@ -78,7 +95,12 @@ func (c *Client) GuestStorage(ctx context.Context, guests []Guest) map[string][]
 			storage, err := c.guestConfigStorage(ctx, g)
 			if err == nil {
 				read[i] = &guestStorage{node: g.Node, storage: storage, readAt: now}
+				return
 			}
+			// The guest keeps its previous result (or none); a failed config
+			// read is tolerated.
+			pkgLogger().Debugw(ctx, "proxmox guest config read failed",
+				append([]any{"cluster_id", c.ClusterID, "node", g.Node}, classFields(err)...)...)
 		}()
 	}
 	wg.Wait()

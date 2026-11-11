@@ -50,8 +50,8 @@ func snapshotKind() *kind {
 	k.writes = &kindWrites{
 		operations:  []resourcev2.Operation{resourcev2.OperationAction, resourcev2.OperationCreate, resourcev2.OperationDelete},
 		descriptors: func() []resourcev2.ActionDescriptor { return []resourcev2.ActionDescriptor{rollbackAction} },
-		action:      k.snapshotAction,
-		mutate:      k.snapshotMutate,
+		action:      k.observeAction(k.snapshotAction),
+		mutate:      k.observeMutate(k.snapshotMutate),
 	}
 	return k
 }
@@ -74,6 +74,7 @@ func listSnapshots(ctx context.Context, client *proxmox.Client) ([]proxmox.Entry
 			return nil, fmt.Errorf("decode guest %s: %w", e.ID, err)
 		}
 		if head.Template == 1 || head.Status == "unknown" || head.Node == "" {
+			// Templates and guests on unreachable nodes have no readable snapshots.
 			continue
 		}
 		guests = append(guests, proxmox.GuestRef{ID: e.ID, Node: head.Node, Raw: e.Raw})
@@ -143,6 +144,7 @@ func guestSnapshots(ctx context.Context, client *proxmox.Client, g proxmox.Guest
 			return nil, fmt.Errorf("decode snapshot of %s: %w", g.ID, err)
 		}
 		if head.Name == "" || head.Name == "current" {
+			// "current" is the live state, not a snapshot.
 			continue
 		}
 		body, err := withField(raw, refsField, ref)

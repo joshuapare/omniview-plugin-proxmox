@@ -44,6 +44,8 @@ func taskKind() *kind {
 		getter: func(ctx context.Context, client *proxmox.Client, upid string) (proxmox.Entry, error) {
 			node, ok := proxmox.TaskNode(upid)
 			if !ok {
+				// Not a UPID: the task does not exist.
+				resLog().Debugw(ctx, "task id is not a UPID", "kind", typeTask)
 				return proxmox.Entry{}, nil
 			}
 			raw, err := client.TaskStatus(ctx, node, upid)
@@ -51,6 +53,7 @@ func taskKind() *kind {
 				// Proxmox answers an unknown UPID on a node with a 400 or 500
 				// ("no such task"), an unknown node with a 404 or 595.
 				if proxmox.IsStatus(err, http.StatusBadRequest) || proxmox.IsStatus(err, http.StatusNotFound) {
+					resLog().Debugw(ctx, "task not found", append([]any{"kind", typeTask}, resClassFields(err)...)...)
 					return proxmox.Entry{}, nil
 				}
 				return proxmox.Entry{}, err

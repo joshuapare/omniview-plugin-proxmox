@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ErrConsoleLogin wraps every failure to log the console user in.
@@ -53,7 +55,16 @@ func (s consoleSession) authorize(req *http.Request) {
 
 // loginConsole exchanges the console user's password for a ticket via POST
 // /access/ticket. The password never appears in errors.
-func (c *Client) loginConsole(ctx context.Context) (consoleSession, error) {
+func (c *Client) loginConsole(ctx context.Context) (session consoleSession, err error) {
+	ctx, span := Tracer().Start(ctx, "proxmox.console.login")
+	span.SetAttributes(attribute.String("proxmox.cluster_id", c.ClusterID))
+	defer func() {
+		EndSpan(span, err)
+		if err != nil {
+			pkgLogger().Warnw(ctx, "proxmox console login failed",
+				append([]any{"cluster_id", c.ClusterID}, classFields(err)...)...)
+		}
+	}()
 	password := c.console.password
 	if c.console.passwordFile != "" {
 		path, err := ExpandPath(c.console.passwordFile)

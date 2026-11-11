@@ -3,11 +3,14 @@ package proxmox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // taskPollInterval is how often WaitTask reads a task's status.
@@ -27,7 +30,32 @@ func (e *TaskError) Error() string {
 // *TaskError unless it ended OK (or OK with warnings). Write endpoints of
 // guests, Ceph daemons and the like answer with a UPID and run the work
 // as a task; the call's own success only means the task was queued.
-func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
+func (c *Client) WaitTask(ctx context.Context, node, upid string) (err error) {
+	taskType := upidType(upid)
+	ctx, span := Tracer().Start(ctx, "proxmox.task.wait")
+	span.SetAttributes(
+		attribute.String("proxmox.node", node),
+		attribute.String("proxmox.task.type", taskType),
+		attribute.String("proxmox.cluster_id", c.ClusterID),
+	)
+	polls := 0
+	exitClass := "failed"
+	start := time.Now()
+	defer func() {
+		span.SetAttributes(attribute.Int("polls", polls), attribute.String("exit_class", exitClass))
+		EndSpan(span, err)
+		TaskWait(exitClass)
+		fields := []any{
+			"node", node, "task_type", taskType, "polls", polls,
+			"exit_class", exitClass, "duration_ms", durationMs(time.Since(start)),
+		}
+		if err != nil {
+			pkgLogger().Debugw(ctx, "proxmox task wait ended", append(fields, classFields(err)...)...)
+		} else {
+			pkgLogger().Debugw(ctx, "proxmox task wait ended", fields...)
+		}
+	}()
+
 	path := "/nodes/" + url.PathEscape(node) + "/tasks/" + url.PathEscape(upid) + "/status"
 	ticker := time.NewTicker(taskPollInterval)
 	defer ticker.Stop()
@@ -36,20 +64,49 @@ func (c *Client) WaitTask(ctx context.Context, node, upid string) error {
 			Status     string `json:"status"`
 			ExitStatus string `json:"exitstatus"`
 		}
+		polls++
 		if err := c.get(ctx, path, nil, &status); err != nil {
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				exitClass = "timeout"
+			case errors.Is(err, context.Canceled):
+				exitClass = "canceled"
+			}
 			return fmt.Errorf("task %s status: %w", upid, err)
 		}
+		pkgLogger().Debugw(ctx, "proxmox task poll", "node", node, "task_type", taskType, "poll", polls, "state", pollState(status.Status))
 		if status.Status == "stopped" {
-			if status.ExitStatus == "OK" || strings.HasPrefix(status.ExitStatus, "WARNINGS") {
+			if status.ExitStatus == "OK" {
+				exitClass = "ok"
 				return nil
 			}
+			if strings.HasPrefix(status.ExitStatus, "WARNINGS") {
+				exitClass = "warnings"
+				return nil
+			}
+			exitClass = "failed"
 			return &TaskError{UPID: upid, ExitStatus: status.ExitStatus}
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				exitClass = "timeout"
+			} else {
+				exitClass = "canceled"
+			}
 			return ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+// pollState maps a task status to a closed vocabulary for logs.
+func pollState(status string) string {
+	switch status {
+	case "running", "stopped":
+		return status
+	default:
+		return "other"
 	}
 }
 
