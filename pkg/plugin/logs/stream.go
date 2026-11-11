@@ -6,7 +6,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	sdklogs "github.com/omniviewdev/plugin-sdk/pkg/v1/logs"
 
@@ -40,6 +44,14 @@ type journal struct {
 	// skew is the node clock minus ours.
 	skew     time.Duration
 	interval time.Duration
+	// pages counts the syslog requests made, for the open span.
+	pages atomic.Int64
+}
+
+// syslog reads one syslog page and counts it.
+func (j *journal) syslog(ctx context.Context, q proxmox.SyslogQuery) (proxmox.SyslogPage, error) {
+	j.pages.Add(1)
+	return j.client.Syslog(ctx, j.node, q, j.loc)
 }
 
 func (j *journal) now() time.Time { return time.Now().Add(j.skew).In(j.loc) }
@@ -52,19 +64,31 @@ func open(ctx context.Context, client *proxmox.Client, node, unit string, req sd
 	// The journal's short timestamps are node-local wall clock without a
 	// year; the node's zone and clock place them. Without /time (it needs
 	// Sys.Audit) the local zone is the best guess.
-	if nt, err := client.NodeTime(ctx, node); err == nil {
+	nt, err := client.NodeTime(ctx, node)
+	if err == nil {
 		j.loc, j.skew = nt.Location, time.Until(nt.Now)
+	} else {
+		logger().Debugw(ctx, "node time unavailable, using the local zone", append([]any{"node", node}, errFields(err)...)...)
 	}
 	return j.stream(ctx, req)
 }
 
 func (j *journal) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.ReadCloser, error) {
 	started := j.now()
-	backlog, err := j.backlog(ctx, req, started)
+	openCtx, span := proxmox.Tracer().Start(ctx, "proxmox.logs.journal.open", trace.WithAttributes(
+		attribute.String("proxmox.node", j.node),
+		attribute.Bool("follow", req.Follow),
+	))
+	backlog, err := j.backlog(openCtx, req, started)
+	span.SetAttributes(attribute.Int64("pages", j.pages.Load()), attribute.Int("backlog_lines", len(backlog)))
+	proxmox.EndSpan(span, err)
 	if err != nil {
 		if !permanent(err) {
-			return nil, err // transient: the SDK reconnects
+			// transient: the SDK reconnects
+			logger().Warnw(ctx, "journal backlog failed, retrying", append([]any{"node", j.node}, errFields(err)...)...)
+			return nil, err
 		}
+		logger().Warnw(ctx, "journal not readable", append([]any{"node", j.node}, errFields(err)...)...)
 		// Reconnecting cannot fix a missing privilege, and an error returned
 		// here never reaches the user, so say it in the log itself.
 		return pipe(ctx, req.Follow, func(w *lineWriter) {
@@ -101,11 +125,16 @@ func (j *journal) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.
 			}
 			lines, err := j.read(w.ctx, cur.second, 0)
 			if err != nil {
+				if w.ctx.Err() != nil {
+					return
+				}
 				if permanent(err) {
+					logger().Warnw(w.ctx, "journal not readable", append([]any{"node", j.node}, errFields(err)...)...)
 					w.message(j.now(), j.describe(err))
 					<-w.ctx.Done()
 					return
 				}
+				logger().Debugw(w.ctx, "journal poll failed", append([]any{"node", j.node}, errFields(err)...)...)
 				continue // transient: try again next tick
 			}
 			if !w.lines(cur.advance(lines, j.parse)) {
@@ -135,13 +164,14 @@ func (j *journal) backlog(ctx context.Context, req sdklogs.LogStreamRequest, now
 		tail = defaultTail
 	}
 	for i, w := range tailWindows {
-		page, err := j.client.Syslog(ctx, j.node, proxmox.SyslogQuery{Service: j.unit, Since: now.Add(-w), Limit: pageSize}, j.loc)
+		page, err := j.syslog(ctx, proxmox.SyslogQuery{Service: j.unit, Since: now.Add(-w), Limit: pageSize})
 		if err != nil {
 			return nil, err
 		}
 		if page.Total < tail && i < len(tailWindows)-1 {
 			continue
 		}
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("window", w.String()))
 		return j.rest(ctx, now.Add(-w), page, tail)
 	}
 	return nil, nil
@@ -150,7 +180,7 @@ func (j *journal) backlog(ctx context.Context, req sdklogs.LogStreamRequest, now
 // read returns the lines since since (second resolution), the last tail of
 // them if tail > 0.
 func (j *journal) read(ctx context.Context, since time.Time, tail int) ([]string, error) {
-	page, err := j.client.Syslog(ctx, j.node, proxmox.SyslogQuery{Service: j.unit, Since: since, Limit: pageSize}, j.loc)
+	page, err := j.syslog(ctx, proxmox.SyslogQuery{Service: j.unit, Since: since, Limit: pageSize})
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +200,7 @@ func (j *journal) rest(ctx context.Context, since time.Time, first proxmox.Syslo
 	}
 	next := max(start, len(first.Lines))
 	for next < first.Total {
-		page, err := j.client.Syslog(ctx, j.node, proxmox.SyslogQuery{Service: j.unit, Since: since, Start: next, Limit: pageSize}, j.loc)
+		page, err := j.syslog(ctx, proxmox.SyslogQuery{Service: j.unit, Since: since, Start: next, Limit: pageSize})
 		if err != nil {
 			return nil, err
 		}
@@ -190,11 +220,11 @@ func (j *journal) parse(line string) (time.Time, string, bool) {
 func (j *journal) describe(err error) string {
 	switch {
 	case proxmox.IsStatus(err, http.StatusForbidden):
-		return fmt.Sprintf("cannot read the syslog of node %s: the API token needs Sys.Syslog on /nodes/%s (%v)", j.node, j.node, err)
+		return fmt.Sprintf("cannot read the syslog of node %s: the API token needs Sys.Syslog on /nodes/%s", j.node, j.node)
 	case proxmox.IsStatus(err, http.StatusUnauthorized):
-		return fmt.Sprintf("cannot read the syslog of node %s: the API token was rejected (%v)", j.node, err)
+		return fmt.Sprintf("cannot read the syslog of node %s: the API token was rejected", j.node)
 	}
-	return fmt.Sprintf("cannot read the syslog of node %s: %v", j.node, err)
+	return fmt.Sprintf("cannot read the syslog of node %s (%s)", j.node, describeClass(err))
 }
 
 // permanent reports errors that retrying will not fix.
@@ -286,6 +316,8 @@ func (lw *lineWriter) lines(lines []parsedLine) bool {
 		lw.buf.WriteString(l.text)
 		lw.buf.WriteByte('\n')
 	}
+	// A write error means the reader closed the pipe: the session is over,
+	// which is expected and not worth a log.
 	_, err := io.WriteString(lw.w, lw.buf.String())
 	return err == nil
 }
@@ -305,13 +337,13 @@ func pipe(ctx context.Context, follow bool, produce func(*lineWriter)) io.ReadCl
 		// Ending ctx must end the read the SDK is blocked in.
 		go func() {
 			<-ctx.Done()
-			_ = pw.Close()
+			_ = pw.Close() // pipe close on shutdown: an already closed pipe is expected
 		}()
 		produce(&lineWriter{ctx: ctx, w: pw})
 		if follow {
 			<-ctx.Done()
 		}
-		_ = pw.Close()
+		_ = pw.Close() // see above: closing an already closed pipe is expected
 	}()
 	return &pipeReader{PipeReader: pr, cancel: cancel}
 }

@@ -271,6 +271,14 @@ toggleable in the card's settings (**Edit Layout** → gear):
   count opens that table. Figures come from the same 10-second poll as the tables.
 - **disconnected**: configured clusters that are not connected; clicking one connects and opens it.
 
+## Diagnostics
+
+The plugin records traces for API requests, tasks, sources, console sessions, and resource operations.
+It reports six bounded measurements through SDK diagnostics: `api.calls`, `api.duration`,
+`terminal.sessions`, `task.waits`, `connection.checks`, and `source.polls`.
+Each name has the prefix `omniview.plugin.self.`.
+Measurements do not include resource identifiers, request bodies, credentials, or provider error text.
+
 ## Development
 
 ```sh

@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
 	"github.com/omniviewdev/plugin-sdk/pkg/types"
 	sdklogs "github.com/omniviewdev/plugin-sdk/pkg/v1/logs"
@@ -18,10 +21,15 @@ import (
 // taskPageSize is the task log page read at a time.
 const taskPageSize = 500
 
+// taskWarnAfter is the number of consecutive failed follow polls that
+// raises a Warn; fewer are Debug only.
+const taskWarnAfter = 5
+
 // taskSources builds the single source of a task: its log, by UPID.
 func taskSources(resourceID string, _ *resourcev2.Value, _ sdklogs.LogSessionOptions) []sdklogs.LogSource {
 	node, ok := proxmox.TaskNode(resourceID)
 	if !ok {
+		logger().Debugw(context.Background(), "log source not supported", "kind", keyTask, "reason", "invalid_upid")
 		return nil
 	}
 	return []sdklogs.LogSource{{
@@ -38,6 +46,7 @@ func taskHandler(ctx *types.PluginContext, req sdklogs.LogStreamRequest) (io.Rea
 	}
 	client, err := proxmox.ClientForConnection(ctx.Connection)
 	if err != nil {
+		logger().Warnw(ctx.Context, "task log client unavailable", append([]any{"node", node}, errFields(err)...)...)
 		return nil, err
 	}
 	t := &taskLog{client: client, node: node, upid: upid, interval: pollInterval}
@@ -56,11 +65,21 @@ type taskLog struct {
 // the new lines until the task has stopped and its log has no more; the
 // followed reader then stays open, without lines, until ctx ends.
 func (t *taskLog) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.ReadCloser, error) {
-	backlog, next, err := t.backlog(ctx, int(req.TailLines))
+	openCtx, span := proxmox.Tracer().Start(ctx, "proxmox.logs.task.open", trace.WithAttributes(
+		attribute.String("proxmox.node", t.node),
+		attribute.Bool("follow", req.Follow),
+		attribute.Int("tail_lines", int(req.TailLines)),
+	))
+	backlog, next, err := t.backlog(openCtx, int(req.TailLines))
+	span.SetAttributes(attribute.Int("backlog_lines", len(backlog)))
+	proxmox.EndSpan(span, err)
 	if err != nil {
 		if !permanent(err) {
-			return nil, err // transient: the SDK reconnects
+			// transient: the SDK reconnects
+			logger().Warnw(ctx, "task log backlog failed, retrying", append([]any{"node", t.node}, errFields(err)...)...)
+			return nil, err
 		}
+		logger().Warnw(ctx, "task log not readable", append([]any{"node", t.node}, errFields(err)...)...)
 		return pipe(ctx, req.Follow, func(w *lineWriter) {
 			w.message(time.Now(), t.describe(err))
 		}), nil
@@ -69,6 +88,12 @@ func (t *taskLog) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.
 		if !w.lines(backlog) || !req.Follow {
 			return
 		}
+		var lineCount, polls, consecutive int
+		lineCount = len(backlog)
+		reason := "canceled"
+		defer func() {
+			logger().Infow(w.ctx, "task log follow ended", "node", t.node, "lines", lineCount, "polls", polls, "reason", reason)
+		}()
 		ticker := time.NewTicker(t.interval)
 		defer ticker.Stop()
 		for {
@@ -79,24 +104,39 @@ func (t *taskLog) stream(ctx context.Context, req sdklogs.LogStreamRequest) (io.
 			}
 			// Read the status first: a task stopped before an empty read has
 			// no lines left to come.
+			polls++
 			stopped, err := t.stopped(w.ctx)
-			if err != nil {
-				continue
-			}
-			lines, err := t.client.TaskLog(w.ctx, t.node, t.upid, next, taskPageSize)
-			if err != nil {
-				continue
-			}
-			lines = withoutPlaceholder(lines, next)
-			if len(lines) == 0 {
-				if stopped {
-					return
+			if err == nil {
+				var lines []proxmox.TaskLogLine
+				lines, err = t.client.TaskLog(w.ctx, t.node, t.upid, next, taskPageSize)
+				if err == nil {
+					consecutive = 0
+					lines = withoutPlaceholder(lines, next)
+					if len(lines) == 0 {
+						if stopped {
+							reason = "task_stopped"
+							return
+						}
+						continue
+					}
+					next = int(lines[len(lines)-1].N)
+					lineCount += len(lines)
+					if !w.lines(taskLines(lines)) {
+						reason = "reader_closed"
+						return
+					}
+					continue
 				}
-				continue
 			}
-			next = int(lines[len(lines)-1].N)
-			if !w.lines(taskLines(lines)) {
+			if w.ctx.Err() != nil {
 				return
+			}
+			consecutive++
+			kv := append([]any{"node", t.node, "consecutive_errors", consecutive}, errFields(err)...)
+			if consecutive == taskWarnAfter {
+				logger().Warnw(w.ctx, "task log polling keeps failing", kv...)
+			} else {
+				logger().Debugw(w.ctx, "task log poll failed", kv...)
 			}
 		}
 	}), nil
@@ -142,9 +182,9 @@ func (t *taskLog) stopped(ctx context.Context) (bool, error) {
 
 func (t *taskLog) describe(err error) string {
 	if proxmox.IsStatus(err, http.StatusForbidden) {
-		return fmt.Sprintf("cannot read the log of task %s: the API token needs Sys.Audit on /nodes/%s (%v)", t.upid, t.node, err)
+		return fmt.Sprintf("cannot read the log of task %s: the API token needs Sys.Audit on /nodes/%s", t.upid, t.node)
 	}
-	return fmt.Sprintf("cannot read the log of task %s: %v", t.upid, err)
+	return fmt.Sprintf("cannot read the log of task %s (%s)", t.upid, describeClass(err))
 }
 
 // withoutPlaceholder drops the single "no content" line Proxmox returns

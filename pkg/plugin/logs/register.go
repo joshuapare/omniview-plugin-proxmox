@@ -3,6 +3,7 @@
 package logs
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
@@ -70,6 +71,7 @@ func sourcesFor(key string) sdklogs.SourceBuilderFunc {
 	return func(resourceID string, body *resourcev2.Value, _ sdklogs.LogSessionOptions) []sdklogs.LogSource {
 		node, unit, err := locate(key, resourceID, proxmox.ResourceData(body))
 		if err != nil {
+			logger().Debugw(context.Background(), "log source not supported", "kind", key, "error_class", "invalid_resource")
 			return nil
 		}
 		name := unit
@@ -91,6 +93,7 @@ func handler(ctx *types.PluginContext, req sdklogs.LogStreamRequest) (io.ReadClo
 	}
 	client, err := proxmox.ClientForConnection(ctx.Connection)
 	if err != nil {
+		logger().Warnw(ctx.Context, "journal client unavailable", append([]any{"node", node}, errFields(err)...)...)
 		return nil, err
 	}
 	return open(ctx.Context, client, node, unit, req)

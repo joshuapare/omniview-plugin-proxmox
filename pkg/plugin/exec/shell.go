@@ -133,7 +133,7 @@ func shellHandler(clients clientFunc, resolve targetFunc) sdkexec.TTYHandlerFunc
 		if ctx == nil || ctx.Context == nil {
 			return errors.New("no session context")
 		}
-		s := &shellSession{tty: tty, stopCh: stopCh, logger: ctx.Logger, done: make(chan struct{})}
+		s := &shellSession{tty: tty, stopCh: stopCh, logger: ctx.Logger, ctx: ctx.Context, done: make(chan struct{})}
 		go s.watch(ctx.Context, resize)
 		go s.connect(ctx, opts, clients, resolve)
 		return nil
@@ -145,6 +145,8 @@ type shellSession struct {
 	tty    *os.File
 	stopCh chan error
 	logger logging.Logger
+	// ctx is the session context, for log lines.
+	ctx context.Context
 
 	// target and started are set by connect before the pumps start.
 	target  proxmox.TermTarget
@@ -163,18 +165,47 @@ type shellSession struct {
 	done chan struct{}
 }
 
+// log returns the session logger, else the plugin default the SDK installs.
+func (s *shellSession) log() logging.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return logging.Default().Named("proxmox.exec")
+}
+
+// lc is the context of log lines.
+func (s *shellSession) lc() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+// errFields classifies err for a log line; it never carries the error text,
+// which may come from the Proxmox API.
+func errFields(err error) []any {
+	outcome, class, status := proxmox.ClassifyError(err)
+	kv := []any{"outcome", outcome, "error_class", class}
+	if status > 0 {
+		kv = append(kv, "http_response_status_code", status)
+	}
+	return kv
+}
+
 // connect resolves the target, opens the console and starts the pumps; any
 // failure ends the session with a classified ExecError.
 func (s *shellSession) connect(ctx *types.PluginContext, opts sdkexec.SessionOptions, clients clientFunc, resolve targetFunc) {
 	target, err := resolve(opts)
 	if err != nil {
+		s.log().Warnw(s.lc(), "shell target invalid", "stage", "resolve", "outcome", "failure", "error_class", "invalid_resource")
 		s.finish(shellError(err, "Invalid resource", err.Error(),
 			"Open the shell from a Proxmox node, virtual machine or container.", false))
 		return
 	}
 	client, err := clients(ctx)
 	if err != nil {
-		s.finish(shellError(err, "Connection unavailable", err.Error(),
+		s.log().Warnw(s.lc(), "shell client unavailable", append([]any{"stage", "client"}, errFields(err)...)...)
+		s.finish(shellError(classedError{err}, "Connection unavailable", classedError{err}.Error(),
 			"Check the cluster entry in the connection's config file.", true))
 		return
 	}
@@ -185,9 +216,11 @@ func (s *shellSession) connect(ctx *types.PluginContext, opts sdkexec.SessionOpt
 	if err != nil {
 		if ctx.Context.Err() != nil {
 			// Cancelled while connecting: a cancel is not an open failure.
+			s.log().Debugw(s.lc(), "shell open canceled", "stage", "open", "outcome", "canceled")
 			s.finish(nil)
 			return
 		}
+		s.log().Warnw(s.lc(), "shell open failed", append([]any{"stage", "open", "kind", target.GuestType}, errFields(err)...)...)
 		s.finish(classifyOpenError(err, target, consoleAuth{ClusterID: client.ClusterID, ConsoleUser: client.ConsoleUser()}))
 		return
 	}
@@ -195,9 +228,12 @@ func (s *shellSession) connect(ctx *types.PluginContext, opts sdkexec.SessionOpt
 	s.target, s.started = target, time.Now()
 	if !s.attach(term) {
 		// Cancelled while connecting.
-		_ = term.Close()
+		if cerr := term.Close(); cerr != nil {
+			s.log().Debugw(s.lc(), "close terminal after cancel", errFields(cerr)...)
+		}
 		return
 	}
+	s.log().Infow(s.lc(), "shell session started", "kind", target.GuestType, "node", target.Node)
 	go s.pumpOutput(term)
 	go s.pumpInput(term)
 }
@@ -220,8 +256,8 @@ func (s *shellSession) attach(term *proxmox.Terminal) bool {
 }
 
 func (s *shellSession) resize(term *proxmox.Terminal, r sdkexec.SessionResizeInput) {
-	if err := term.Resize(int(r.Cols), int(r.Rows)); err != nil && s.logger != nil {
-		s.logger.Warnw(context.Background(), "resize terminal", "error", err)
+	if err := term.Resize(int(r.Cols), int(r.Rows)); err != nil {
+		s.log().Warnw(s.lc(), "resize terminal", errFields(err)...)
 	}
 }
 
@@ -236,8 +272,8 @@ func (s *shellSession) finish(err error) {
 		term := s.term
 		s.mu.Unlock()
 		if term != nil {
-			if cerr := term.Close(); cerr != nil && s.logger != nil {
-				s.logger.Warnw(context.Background(), "close terminal websocket", "error", cerr)
+			if cerr := term.Close(); cerr != nil {
+				s.log().Warnw(s.lc(), "close terminal websocket", errFields(cerr)...)
 			}
 		}
 		s.stopCh <- err
@@ -256,6 +292,7 @@ func (s *shellSession) pumpOutput(term *proxmox.Terminal) {
 			}
 			if _, werr := s.tty.Write(buf[:n]); werr != nil {
 				// The manager closed the PTY: the session is over.
+				s.log().Debugw(s.lc(), "pty write failed, ending session", "direction", "output", "error_class", "pty_closed")
 				s.finish(nil)
 				return
 			}
@@ -264,7 +301,8 @@ func (s *shellSession) pumpOutput(term *proxmox.Terminal) {
 			if errors.Is(err, io.EOF) {
 				s.finish(s.exitError())
 			} else {
-				s.finish(shellError(err, "Connection lost", err.Error(),
+				s.log().Warnw(s.lc(), "console websocket closed unexpectedly", errFields(err)...)
+				s.finish(shellError(classedError{err}, "Connection lost", classedError{err}.Error(),
 					"The console websocket closed unexpectedly. Open the shell again.", true))
 			}
 			return
@@ -280,10 +318,12 @@ func (s *shellSession) pumpInput(term *proxmox.Terminal) {
 		n, err := s.tty.Read(buf)
 		if n > 0 {
 			if _, werr := term.Write(buf[:n]); werr != nil {
+				s.log().Debugw(s.lc(), "console write failed", append([]any{"direction", "input"}, errFields(werr)...)...)
 				return
 			}
 		}
 		if err != nil {
+			// PTY EOF or close: the manager ended the session.
 			s.finish(nil)
 			return
 		}
@@ -341,6 +381,20 @@ func (s *shellSession) exitError() error {
 	return nil
 }
 
+// classedError is a failure whose text is its classification only: API error
+// text may carry remote content. It unwraps to the original error.
+type classedError struct{ cause error }
+
+func (e classedError) Error() string {
+	_, class, status := proxmox.ClassifyError(e.cause)
+	if status > 0 {
+		return fmt.Sprintf("%s, HTTP %d", class, status)
+	}
+	return class
+}
+
+func (e classedError) Unwrap() error { return e.cause }
+
 // consoleAuth says how the client authenticates consoles: as ConsoleUser
 // when set, otherwise with the API token, which PVE rejects.
 type consoleAuth struct {
@@ -360,50 +414,53 @@ func (a consoleAuth) tokenSuggestion() string {
 // classifyOpenError maps a console login, termproxy or websocket failure to
 // an ExecError.
 func classifyOpenError(err error, target proxmox.TermTarget, auth consoleAuth) error {
+	// Provider text (API reasons, error strings) never reaches the user: the
+	// cause shows its classification only.
+	cause := classedError{err}
 	tokenOnly := auth.ConsoleUser == ""
 	switch {
 	case errors.Is(err, proxmox.ErrConsoleTFA):
-		return shellError(err, "Console user has two-factor auth", err.Error(),
+		return shellError(cause, "Console user has two-factor auth", cause.Error(),
 			fmt.Sprintf("%s has two-factor authentication, which a console login cannot complete. "+
 				"Use a user without TFA as console_user.", auth.ConsoleUser), false)
 	case errors.Is(err, proxmox.ErrConsoleLogin) && proxmox.IsStatus(err, http.StatusUnauthorized):
-		return shellError(err, "Console login failed", err.Error(),
+		return shellError(cause, "Console login failed", cause.Error(),
 			fmt.Sprintf("Proxmox VE rejected the password of %s. Check console_user and console_password "+
 				"(or console_password_file) for cluster %q in clusters.yaml.", auth.ConsoleUser, auth.ClusterID), false)
 	case errors.Is(err, proxmox.ErrConsoleLogin):
-		return shellError(err, "Console login failed", err.Error(),
+		return shellError(cause, "Console login failed", cause.Error(),
 			fmt.Sprintf("Check console_user and console_password (or console_password_file) for cluster %q "+
 				"in clusters.yaml.", auth.ClusterID), true)
 	case errors.Is(err, proxmox.ErrTerminalHandshake) && tokenOnly:
-		return shellError(err, "Console refused the API token",
+		return shellError(cause, "Console refused the API token",
 			"termproxy closed the connection after the ticket handshake", auth.tokenSuggestion(), false)
 	case errors.Is(err, proxmox.ErrTerminalHandshake):
-		return shellError(err, "Terminal authentication failed", err.Error(),
+		return shellError(cause, "Terminal authentication failed", cause.Error(),
 			"termproxy rejected the console ticket. Open the shell again.", true)
 	}
 
 	var apiErr *proxmox.APIError
 	if !errors.As(err, &apiErr) {
-		return shellError(err, "Connection failed", err.Error(),
+		return shellError(cause, "Connection failed", cause.Error(),
 			"Could not open the console websocket on the Proxmox API.", true)
 	}
-	message := apiErr.Reason
-	lower := strings.ToLower(message)
+	lower := strings.ToLower(apiErr.Reason) // matched locally, never shown
+	message := cause.Error()
 	switch {
 	case apiErr.StatusCode == http.StatusForbidden:
-		return shellError(err, "Permission denied", message, permissionSuggestion(target, auth), false)
+		return shellError(cause, "Permission denied", message, permissionSuggestion(target, auth), false)
 	case apiErr.StatusCode == http.StatusUnauthorized && tokenOnly:
-		return shellError(err, "Unauthorized", message,
+		return shellError(cause, "Unauthorized", message,
 			"The API token was rejected. Check token_id and token_secret.", false)
 	case apiErr.StatusCode == http.StatusUnauthorized:
-		return shellError(err, "Unauthorized", message,
+		return shellError(cause, "Unauthorized", message,
 			"The console ticket was rejected. Open the shell again.", true)
 	case strings.Contains(lower, "does not look like a valid user name"):
-		return shellError(err, "Console refused the API token", message, auth.tokenSuggestion(), false)
+		return shellError(cause, "Console refused the API token", message, auth.tokenSuggestion(), false)
 	case strings.Contains(lower, "not running"):
-		return shellError(err, "Guest not running", message, "Start the guest, then open the shell again.", true)
+		return shellError(cause, "Guest not running", message, "Start the guest, then open the shell again.", true)
 	default:
-		return shellError(err, "Console unavailable", message,
+		return shellError(cause, "Console unavailable", message,
 			"Proxmox VE could not start the console. Check the task log on the node.", true)
 	}
 }
