@@ -92,8 +92,8 @@ func guestKind(typ, label, noun, guestType string) *kind {
 			resourcev2.OperationMutationUpdate, resourcev2.OperationDelete,
 		},
 		descriptors: k.actionDescriptors,
-		action:      k.action,
-		mutate:      k.mutate,
+		action:      k.observeAction(k.action),
+		mutate:      k.observeMutate(k.mutate),
 	}
 	return k
 }
@@ -179,7 +179,7 @@ func (k *kind) get(ctx context.Context, client *proxmox.Client, request resource
 		}
 		return record(request.Reference, e)
 	}
-	entries, err := k.list(ctx, client)
+	entries, err := k.fetch(ctx, client)
 	if err != nil {
 		return resourcev2.Record{}, err
 	}
@@ -199,7 +199,7 @@ func (k *kind) enumerate(
 	client *proxmox.Client,
 	request resourcev2.EnumerateRequest,
 ) (resourcev2.SourcePage, error) {
-	entries, err := k.list(ctx, client)
+	entries, err := k.fetch(ctx, client)
 	if err != nil {
 		return resourcev2.SourcePage{}, err
 	}

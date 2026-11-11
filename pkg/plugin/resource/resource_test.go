@@ -31,7 +31,7 @@ clusters:
 		t.Fatal(err)
 	}
 
-	conns, err := loadConnections([]string{filepath.Join(dir, "missing.yaml"), file})
+	conns, err := loadConnections(context.Background(), []string{filepath.Join(dir, "missing.yaml"), file})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ clusters:
 		}
 	}
 
-	if _, err := loadConnections([]string{file, file}); err == nil {
+	if _, err := loadConnections(context.Background(), []string{file, file}); err == nil {
 		t.Fatal("expected duplicate cluster id across files to be rejected")
 	}
 }

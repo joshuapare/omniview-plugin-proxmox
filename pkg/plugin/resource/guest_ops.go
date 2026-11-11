@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
@@ -80,7 +83,7 @@ var configAction = resourcev2.ActionDescriptor{
 var pendingAction = resourcev2.ActionDescriptor{
 	ID: "pending", Label: "Pending configuration", Icon: "LuFileText", ParamsSchema: &resourcev2.Schema{},
 	Description: "Read the VM's current and pending configuration.",
-	Scope: resourcev2.ActionScopeInstance,
+	Scope:       resourcev2.ActionScopeInstance,
 }
 
 // actions lists the lifecycle actions of this guest kind.
@@ -310,7 +313,11 @@ func (k *kind) find(ctx context.Context, client *proxmox.Client, id string) (pro
 	if !strings.HasPrefix(id, k.guestType+"/") {
 		return proxmox.GuestRef{}, &proxmox.GuestNotFoundError{ID: id}
 	}
-	return client.FindGuest(ctx, id)
+	g, err := client.FindGuest(ctx, id)
+	if err == nil {
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("proxmox.node", g.Node))
+	}
+	return g, err
 }
 
 // configChanges splits an update input into the keys to set (as Proxmox
@@ -366,11 +373,25 @@ func configChanges(input resourcev2.Value) (map[string]string, []string, string,
 // waitTask waits for a guest task for at most taskWaitBound. done is false
 // when the bound expired with the task still running.
 func waitTask(ctx context.Context, client *proxmox.Client, node, upid string) (done bool, err error) {
+	taskType := resUPIDType(upid)
+	span := trace.SpanFromContext(ctx)
+	span.AddEvent("task.accepted", trace.WithAttributes(attribute.String("proxmox.node", node), attribute.String("proxmox.task.type", taskType)))
+	resLog().Infow(ctx, "proxmox task accepted", "node", node, "task_type", taskType)
+	start := time.Now()
 	waitCtx, cancel := context.WithTimeout(ctx, taskWaitBound)
 	defer cancel()
 	err = client.WaitTask(waitCtx, node, upid)
-	if err != nil && ctx.Err() == nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+	waited := time.Since(start).Milliseconds()
+	switch {
+	case err != nil && ctx.Err() == nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded):
+		span.AddEvent("task.still_running", trace.WithAttributes(attribute.Int64("wait_ms", waited)))
+		resLog().Warnw(ctx, "proxmox task still running after wait bound", "node", node, "task_type", taskType, "wait_ms", waited, "bound_ms", taskWaitBound.Milliseconds())
 		return false, nil
+	case err != nil:
+		span.AddEvent("task.failed", trace.WithAttributes(attribute.Int64("wait_ms", waited)))
+		resLog().Warnw(ctx, "proxmox task failed", append([]any{"node", node, "task_type", taskType, "wait_ms", waited}, resClassFields(err)...)...)
+	default:
+		resLog().Debugw(ctx, "proxmox task finished", "node", node, "task_type", taskType, "wait_ms", waited)
 	}
 	return err == nil, err
 }

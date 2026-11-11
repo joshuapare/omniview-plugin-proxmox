@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	resourcev2 "github.com/omniviewdev/plugin-sdk/pkg/resource/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/mononendev/omniview-plugin-proxmox/pkg/proxmox"
 )
@@ -125,6 +127,7 @@ func addRefs(ctx context.Context, client *proxmox.Client, entryType string, entr
 	if len(guests) > 0 {
 		storage = client.GuestStorage(ctx, guests)
 	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int("addrefs_requests", len(guests)))
 
 	for i := range entries {
 		ref := refs{}
