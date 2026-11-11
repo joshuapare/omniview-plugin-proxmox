@@ -1,6 +1,7 @@
 package proxmox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -40,8 +41,11 @@ func ClientForConnection(conn *types.Connection) (*Client, error) {
 	}
 	cluster, err := FindCluster(file, conn.ID)
 	if err != nil {
+		pkgLogger().Debugw(context.Background(), "proxmox cluster config reload failed",
+			append([]any{"connection_id", conn.ID}, classFields(err)...)...)
 		return nil, err
 	}
+	pkgLogger().Debugw(context.Background(), "proxmox cluster config reloaded", "connection_id", conn.ID, "cluster_id", cluster.ID)
 
 	connClients.Lock()
 	defer connClients.Unlock()
@@ -49,11 +53,14 @@ func ClientForConnection(conn *types.Connection) (*Client, error) {
 		if cached.cluster == cluster {
 			return cached.client, nil
 		}
+		pkgLogger().Infow(context.Background(), "proxmox client replaced", "connection_id", conn.ID, "cluster_id", cluster.ID)
 		cached.client.Close()
 	}
 	client, err := NewClient(cluster)
 	if err != nil {
 		delete(connClients.m, conn.ID)
+		pkgLogger().Warnw(context.Background(), "proxmox client build failed",
+			append([]any{"connection_id", conn.ID, "cluster_id", cluster.ID}, classFields(err)...)...)
 		return nil, err
 	}
 	connClients.m[conn.ID] = cachedClient{cluster: cluster, client: client}

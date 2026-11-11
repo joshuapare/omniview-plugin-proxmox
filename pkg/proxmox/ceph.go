@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Ceph state is cluster-wide, but Proxmox serves it only under
@@ -151,26 +154,47 @@ func (c *Client) cephList(ctx context.Context, sub, idField string) ([]Entry, er
 	return out, nil
 }
 
-func (c *Client) cephGet(ctx context.Context, sub string, into any) error {
+func (c *Client) cephGet(ctx context.Context, sub string, into any) (err error) {
+	ctx, span := Tracer().Start(ctx, "proxmox.ceph.get")
+	span.SetAttributes(
+		attribute.String("proxmox.cluster_id", c.ClusterID),
+		attribute.String("proxmox.ceph.resource", cephSubKind(sub)),
+	)
+	nodesTried := 0
+	routeHit := false
+	defer func() {
+		span.SetAttributes(attribute.Int("nodes_tried", nodesTried), attribute.Bool("route_hit", routeHit))
+		EndSpan(span, err)
+	}()
+
 	var errs []error
 	// attempt reports whether the result is final: success, or a failure no
 	// other node would answer differently.
-	attempt := func(node string) (bool, error) {
+	attempt := func(node string, remembered bool) (bool, error) {
+		nodesTried++
 		err := c.get(ctx, "/nodes/"+node+"/ceph/"+sub, nil, into)
 		switch {
 		case err == nil:
+			if remembered {
+				routeHit = true
+			} else {
+				span.AddEvent("ceph.route.changed", trace.WithAttributes(attribute.String("proxmox.node", node)))
+				pkgLogger().Debugw(ctx, "proxmox ceph route changed", "cluster_id", c.ClusterID, "node", node)
+			}
 			c.ceph.set(node)
 			return true, nil
 		case ctx.Err() != nil, IsStatus(err, http.StatusUnauthorized), IsStatus(err, http.StatusForbidden):
 			return true, err
 		}
+		pkgLogger().Debugw(ctx, "proxmox ceph node failed",
+			append([]any{"cluster_id", c.ClusterID, "node", node, "resource", cephSubKind(sub)}, classFields(err)...)...)
 		errs = append(errs, fmt.Errorf("%s: %w", node, err))
 		return false, nil
 	}
 
 	last := c.ceph.get()
 	if last != "" {
-		if done, err := attempt(last); done {
+		if done, err := attempt(last, true); done {
 			return err
 		}
 	}
@@ -182,12 +206,25 @@ func (c *Client) cephGet(ctx context.Context, sub string, into any) error {
 		if node == last {
 			continue
 		}
-		if done, err := attempt(node); done {
+		if done, err := attempt(node, false); done {
 			return err
 		}
 	}
+	if last != "" {
+		span.AddEvent("ceph.route.changed", trace.WithAttributes(attribute.String("proxmox.node", "")))
+	}
 	c.ceph.set("")
 	return &CephUnavailableError{Errs: errs}
+}
+
+// cephSubKind maps a Ceph sub-path to a closed vocabulary.
+func cephSubKind(sub string) string {
+	switch sub {
+	case "status", "pool", "mon", "mgr", "mds", "fs", "osd":
+		return sub
+	default:
+		return "other"
+	}
 }
 
 // onlineNodes returns the names of online cluster nodes, sorted.

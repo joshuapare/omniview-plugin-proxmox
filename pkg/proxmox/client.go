@@ -14,6 +14,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -209,11 +212,59 @@ func (c *Client) authorizeToken(req *http.Request) {
 	req.Header.Set("Authorization", c.auth)
 }
 
-// send is do with the request's credentials set by authorize.
+// send is do with the request's credentials set by authorize. It records a
+// span, a log line and metrics per call; none carries a body, header, query
+// or provider error text.
 func (c *Client) send(ctx context.Context, authorize func(*http.Request), method, path string, query, form url.Values, into any) error {
+	route := apiRoute(path)
+	attrs := []attribute.KeyValue{
+		attribute.String("http.request.method", method),
+		attribute.String("proxmox.api.route", route),
+	}
+	if c.ClusterID != "" {
+		attrs = append(attrs, attribute.String("proxmox.cluster_id", c.ClusterID))
+	}
+	ctx, span := Tracer().Start(ctx, "proxmox.api.request", trace.WithAttributes(attrs...))
+	start := time.Now()
+	status, respBytes, err := c.exchange(ctx, authorize, method, path, query, form, into)
+	elapsed := time.Since(start)
+
+	if status > 0 {
+		span.SetAttributes(attribute.Int("http.response.status_code", status))
+	}
+	span.SetAttributes(attribute.Int64("response_bytes", respBytes))
+	EndSpan(span, err)
+
+	APICall(metricOperation(method), apiMetricOutcome(status, err), elapsed)
+
+	fields := []any{
+		"method", method,
+		"route", route,
+		"status", status,
+		"duration_ms", durationMs(elapsed),
+		"cluster_id", c.ClusterID,
+	}
+	if err != nil {
+		outcome, class, _ := ClassifyError(err)
+		fields = append(fields, "outcome", outcome, "error_class", class)
+	}
+	switch {
+	case status >= 500:
+		pkgLogger().Warnw(ctx, "proxmox api server error", fields...)
+	case err != nil && warnClass(err):
+		pkgLogger().Warnw(ctx, "proxmox api request failed", fields...)
+	default:
+		pkgLogger().Debugw(ctx, "proxmox api request", fields...)
+	}
+	return err
+}
+
+// exchange performs the request and returns the HTTP status (0 when no
+// response arrived) and the bytes read from the response body.
+func (c *Client) exchange(ctx context.Context, authorize func(*http.Request), method, path string, query, form url.Values, into any) (status int, respBytes int64, err error) {
 	u, err := c.endpoint(path)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	u.RawQuery = query.Encode()
 
@@ -223,7 +274,7 @@ func (c *Client) send(ctx context.Context, authorize func(*http.Request), method
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	authorize(req)
 	req.Header.Set("Accept", "application/json")
@@ -233,9 +284,12 @@ func (c *Client) send(ctx context.Context, authorize func(*http.Request), method
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	defer resp.Body.Close()
+	status = resp.StatusCode
+	counted := &countingReader{r: resp.Body}
+	defer func() { respBytes = counted.n }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		reason := strings.TrimSpace(strings.TrimPrefix(resp.Status, fmt.Sprint(resp.StatusCode)))
@@ -243,34 +297,34 @@ func (c *Client) send(ctx context.Context, authorize func(*http.Request), method
 		var failure struct {
 			Errors map[string]string `json:"errors"`
 		}
-		if json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&failure) == nil {
+		if json.NewDecoder(io.LimitReader(counted, maxResponseBytes)).Decode(&failure) == nil {
 			apiErr.Errors = failure.Errors
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
-		return apiErr
+		_, _ = io.Copy(io.Discard, io.LimitReader(counted, maxResponseBytes))
+		return status, 0, apiErr
 	}
 
 	var envelope struct {
 		Data  json.RawMessage `json:"data"`
 		Total int             `json:"total"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&envelope); err != nil {
-		return fmt.Errorf("decode %s response: %w", path, err)
+	if err := json.NewDecoder(io.LimitReader(counted, maxResponseBytes)).Decode(&envelope); err != nil {
+		return status, 0, fmt.Errorf("decode %s response: %w", path, err)
 	}
 	if p, ok := into.(*paged); ok {
 		p.total = envelope.Total
 		into = p.into
 	}
 	if into == nil {
-		return nil
+		return status, 0, nil
 	}
 	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
-		return fmt.Errorf("proxmox api: %s returned no data", path)
+		return status, 0, fmt.Errorf("proxmox api: %s returned no data", path)
 	}
 	if err := json.Unmarshal(envelope.Data, into); err != nil {
-		return fmt.Errorf("decode %s data: %w", path, err)
+		return status, 0, fmt.Errorf("decode %s data: %w", path, err)
 	}
-	return nil
+	return status, 0, nil
 }
 
 // IsStatus reports whether err is an APIError with the given HTTP status.

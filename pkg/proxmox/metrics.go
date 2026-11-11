@@ -23,12 +23,48 @@ func metricAttr(key sdkdiag.Key, value string) sdkdiag.Attr {
 }
 
 func APICall(operation, outcome string, d time.Duration) {
+	switch operation {
+	case "read", "write", "delete":
+	default:
+		operation = "other"
+	}
+	switch outcome {
+	case "ok", "client_error", "server_error", "failed":
+	default:
+		outcome = "other"
+	}
 	apiCalls.Add(1, metricAttr(sdkdiag.KeyOperation, operation), metricAttr(sdkdiag.KeyOutcome, outcome))
 	apiDuration.Observe(d.Seconds(), metricAttr(sdkdiag.KeyOperation, operation))
 }
-func TerminalSession(state string) { terminalSessions.Add(1, metricAttr(sdkdiag.KeyState, state)) }
-func TaskWait(outcome string)      { taskWaits.Add(1, metricAttr(sdkdiag.KeyOutcome, outcome)) }
+func TerminalSession(state string) {
+	switch state {
+	case "opened", "failed", "closed":
+	default:
+		state = "other"
+	}
+	terminalSessions.Add(1, metricAttr(sdkdiag.KeyState, state))
+}
+func TaskWait(outcome string) {
+	switch outcome {
+	case "ok", "warnings", "failed", "timeout", "canceled":
+	default:
+		outcome = "other"
+	}
+	taskWaits.Add(1, metricAttr(sdkdiag.KeyOutcome, outcome))
+}
 func ConnectionCheck(outcome string) {
+	switch outcome {
+	case "connected", "unauthorized", "forbidden", "certificate_error", "connection_error", "timeout":
+	default:
+		outcome = "other"
+	}
 	connectionChecks.Add(1, metricAttr(sdkdiag.KeyOutcome, outcome))
 }
-func SourcePoll(outcome string) { sourcePolls.Add(1, metricAttr(sdkdiag.KeyOutcome, outcome)) }
+func SourcePoll(outcome string) {
+	switch outcome {
+	case "ok", "terminated", "failed", "canceled":
+	default:
+		outcome = "other"
+	}
+	sourcePolls.Add(1, metricAttr(sdkdiag.KeyOutcome, outcome))
+}
